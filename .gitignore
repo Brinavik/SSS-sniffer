@@ -1,0 +1,52 @@
+# ---------- CMake / 构建产物 ----------
+build/
+out/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.ninja
+.ninja_deps
+.ninja_log
+install_manifest.txt
+
+# ---------- Visual Studio ----------
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.*
+*.user
+*.suo
+*.db
+*.opendb
+*.ipch
+
+# ---------- 编译中间文件 ----------
+*.obj
+*.o
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.exe
+*.dll
+
+# ---------- Qt 生成物 ----------
+moc_*.cpp
+moc_predefs.h
+qrc_*.cpp
+ui_*.h
+*.moc
+.qmake.stash
+
+# ---------- 运行时抓包数据 ----------
+captures/
+*.pcap
+*.pcapng
+*.log
+
+# ---------- 编辑器 / 系统 ----------
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

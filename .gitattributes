@@ -1,0 +1,14 @@
+* text=auto
+
+*.cpp text
+*.h   text
+*.md  text
+*.txt text
+*.cmake text
+*.json text
+
+*.png  binary
+*.jpg  binary
+*.ico  binary
+*.pcap binary
+*.pcapng binary
