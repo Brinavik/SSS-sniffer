@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include "filter/FilterExpression.h"
+#include "flow/TcpFlowTracker.h"
 #include "model/PacketRecord.h"
 #include "protocol/Dissector.h"
 
@@ -329,6 +330,72 @@ void testMalformedIpv4()
     check(result.sourcePort == 0, QStringLiteral("IPv4 bad total length has no ports"));
 }
 
+void testFlowTracking()
+{
+    sss::flow::TcpFlowTracker tracker;
+
+    auto makeTcp = [](quint64 index, const QString &source, quint16 sourcePort,
+                      const QString &destination, quint16 destinationPort,
+                      quint8 flags, int length) {
+        sss::model::PacketRecord record;
+        record.index = index;
+        record.source = source;
+        record.destination = destination;
+        record.sourcePort = sourcePort;
+        record.destinationPort = destinationPort;
+        record.ipProtocol = 6;
+        record.ipVersion = 4;
+        record.tcpFlags = flags;
+        record.length = length;
+        record.timestamp = QDateTime::currentDateTime();
+        return record;
+    };
+
+    tracker.observe(makeTcp(1, QStringLiteral("127.0.0.1"), 50000,
+                            QStringLiteral("127.0.0.1"), 3080, 0x02, 60)); // SYN
+    check(tracker.count() == 1, QStringLiteral("flow: SYN creates one flow"));
+
+    // The reply must land in the same flow, not a mirrored one.
+    tracker.observe(makeTcp(2, QStringLiteral("127.0.0.1"), 3080,
+                            QStringLiteral("127.0.0.1"), 50000, 0x12, 60)); // SYN+ACK
+    check(tracker.count() == 1, QStringLiteral("flow: reverse direction joins the flow"));
+
+    tracker.observe(makeTcp(3, QStringLiteral("127.0.0.1"), 50000,
+                            QStringLiteral("127.0.0.1"), 3080, 0x10, 100));
+    const QVector<sss::flow::TcpFlow> flows = tracker.flows();
+    check(flows.size() == 1, QStringLiteral("flow: single flow"));
+    check(flows.first().packetCount() == 3, QStringLiteral("flow: packet count"));
+    check(flows.first().byteCount() == 220, QStringLiteral("flow: byte count"));
+    check(flows.first().stateText() == QStringLiteral("ESTABLISHED"),
+          QStringLiteral("flow: state established"));
+    check(flows.first().initiatorPort == 50000, QStringLiteral("flow: initiator from SYN"));
+
+    tracker.observe(makeTcp(4, QStringLiteral("127.0.0.1"), 3080,
+                            QStringLiteral("127.0.0.1"), 50000, 0x11, 60)); // FIN+ACK
+    check(tracker.flows().first().stateText() == QStringLiteral("CLOSED"),
+          QStringLiteral("flow: state closed"));
+
+    // A different 4-tuple is a different conversation.
+    tracker.observe(makeTcp(5, QStringLiteral("127.0.0.1"), 50001,
+                            QStringLiteral("127.0.0.1"), 3080, 0x02, 60));
+    check(tracker.count() == 2, QStringLiteral("flow: distinct tuple is a new flow"));
+
+    // UDP on the same ports must never be folded into a TCP conversation.
+    sss::model::PacketRecord datagram = makeTcp(6, QStringLiteral("127.0.0.1"), 50000,
+                                                QStringLiteral("8.8.8.8"), 53, 0, 70);
+    datagram.ipProtocol = 17;
+    tracker.observe(datagram);
+    check(tracker.count() == 2, QStringLiteral("flow: UDP ignored"));
+
+    tracker.observe(makeTcp(7, QStringLiteral("127.0.0.1"), 50001,
+                            QStringLiteral("127.0.0.1"), 3080, 0x04, 60)); // RST
+    const QVector<sss::flow::TcpFlow> all = tracker.flows();
+    check(all.size() == 2, QStringLiteral("flow: still two flows"));
+    check(all.at(1).stateText() == QStringLiteral("RESET"), QStringLiteral("flow: state reset"));
+    check(all.at(0).key.endpointAText() == QStringLiteral("127.0.0.1:3080"),
+          QStringLiteral("flow: endpoints canonicalised"));
+}
+
 void testFilters()
 {
     const sss::model::PacketRecord http = httpRecord();
@@ -387,6 +454,7 @@ int main()
     testIpv6Tcp();
     testIpv6Fragment();
     testMalformedIpv4();
+    testFlowTracking();
     testFilters();
 
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);

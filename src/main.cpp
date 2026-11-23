@@ -137,6 +137,11 @@ int main(int argc, char *argv[])
             const bool filterApplied =
                 displayFilter.isEmpty() ? true : window.setDisplayFilter(displayFilter);
 
+            // Follow the busiest TCP conversation so the screenshot shows the
+            // flow restriction working, not just the filter.
+            const bool followed = window.followLargestFlow();
+            const int flows = window.flowCount();
+
             const QString pngPath = reportPath + QStringLiteral(".png");
             if (!window.selectFirstPacketWithProtocol(QStringLiteral("HTTP"))) {
                 window.selectFirstPacketWithProtocol(QStringLiteral("TCP"));
@@ -157,6 +162,8 @@ int main(int argc, char *argv[])
                             << QString("elevated=%1").arg(sss::capture::CaptureThread::isElevated() ? "yes" : "no")
                             << QString("rows=%1").arg(rows)
                             << QString("protocols=%1").arg(window.protocolSummary())
+                            << QString("tcp_flows=%1").arg(flows)
+                            << QString("followed_largest_flow=%1").arg(followed ? "yes" : "no")
                             << QString("display_filter=%1").arg(displayFilter)
                             << QString("filter_applied=%1").arg(filterApplied ? "yes" : "no")
                             << QString("visible=%1").arg(window.visiblePacketCount())

@@ -4,6 +4,7 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDockWidget>
 #include <QFont>
 #include <QFontDatabase>
 #include <QHeaderView>
@@ -38,6 +39,7 @@
 #include "capture/DeviceEnumerator.h"
 #include "filter/FilterExpression.h"
 #include "model/SamplePackets.h"
+#include "ui/FlowTableModel.h"
 #include "ui/PacketFilterProxyModel.h"
 #include "ui/PacketTableModel.h"
 
@@ -99,6 +101,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_model = new sss::ui::PacketTableModel(this);
     m_proxy = new sss::ui::PacketFilterProxyModel(this);
     m_proxy->setSourceModel(m_model);
+    m_flows = new sss::flow::TcpFlowTracker();
+    m_flowModel = new sss::ui::FlowTableModel(this);
     m_capture = new sss::capture::CaptureThread(this);
     m_drainTimer = new QTimer(this);
     m_drainTimer->setInterval(100);
@@ -110,6 +114,7 @@ MainWindow::MainWindow(QWidget *parent)
     createCentralWidget();
     createToolBar();
     createStatusBar();
+    createFlowDock();
 
     connect(m_table->selectionModel(), &QItemSelectionModel::currentRowChanged,
             this, &MainWindow::onCurrentRowChanged);
@@ -118,6 +123,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_capture, &sss::capture::CaptureThread::captureStopped,
             this, &MainWindow::onCaptureStopped);
     connect(m_drainTimer, &QTimer::timeout, this, &MainWindow::pollCapture);
+
 
     loadDevices();
     updateCounters();
@@ -246,6 +252,9 @@ void MainWindow::createToolBar()
 
     QAction *resetAction = filterBar->addAction(QStringLiteral("Reset"));
     connect(resetAction, &QAction::triggered, this, &MainWindow::onDisplayFilterCleared);
+
+    QAction *unfollowAction = filterBar->addAction(QStringLiteral("Stop following"));
+    connect(unfollowAction, &QAction::triggered, this, &MainWindow::onStopFollowing);
 }
 
 void MainWindow::createStatusBar()
@@ -266,6 +275,39 @@ void MainWindow::createStatusBar()
                            "border-radius: 3px; padding: 1px 6px; }"));
     }
     statusBar()->addPermanentWidget(m_privilegeLabel);
+}
+
+void MainWindow::createFlowDock()
+{
+    m_flowTable = new QTableView(this);
+    m_flowTable->setModel(m_flowModel);
+    m_flowTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_flowTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_flowTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_flowTable->setAlternatingRowColors(true);
+    m_flowTable->setShowGrid(false);
+    m_flowTable->verticalHeader()->setVisible(false);
+    m_flowTable->verticalHeader()->setDefaultSectionSize(22);
+    m_flowTable->horizontalHeader()->setStretchLastSection(true);
+    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnIndex, 40);
+    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnClient, 200);
+    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnServer, 200);
+    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnPackets, 80);
+    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnBytes, 90);
+    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnDuration, 90);
+
+    m_flowDock = new QDockWidget(QStringLiteral("TCP flows (double-click a row to follow)"), this);
+    m_flowDock->setObjectName(QStringLiteral("flowDock"));
+    m_flowDock->setWidget(m_flowTable);
+    m_flowDock->setAllowedAreas(Qt::BottomDockWidgetArea | Qt::RightDockWidgetArea);
+    addDockWidget(Qt::BottomDockWidgetArea, m_flowDock);
+
+    connect(m_flowTable, &QTableView::doubleClicked, this, &MainWindow::onFlowActivated);
+}
+
+void MainWindow::refreshFlows()
+{
+    m_flowModel->setFlows(m_flows->flows());
 }
 
 void MainWindow::loadDevices()
@@ -311,6 +353,9 @@ bool MainWindow::startCapture(const QString &deviceName, const QString &bpfFilte
     m_model->clear();
     m_details->clear();
     m_hex->clear();
+    m_flows->reset();
+    m_flowModel->clear();
+    m_proxy->clearFlowFilter();
     updateCounters();
 
     // Keep the device selector in sync when the caller (CLI test) picked a
@@ -346,8 +391,11 @@ void MainWindow::stopCapture()
 
     m_startAction->setEnabled(true);
     m_stopAction->setEnabled(false);
+    refreshFlows();
     updateCounters();
-    statusBar()->showMessage(QString("Capture stopped: %1 packets").arg(m_model->rowCount()));
+    statusBar()->showMessage(QString("Capture stopped: %1 packets, %2 TCP flows")
+                                 .arg(m_model->rowCount())
+                                 .arg(m_flows->count()));
 }
 
 void MainWindow::pollCapture()
@@ -359,6 +407,14 @@ void MainWindow::pollCapture()
 
     QScrollBar *scrollBar = m_table->verticalScrollBar();
     const bool followTail = scrollBar->value() >= scrollBar->maximum() - 4;
+
+    for (const sss::model::PacketRecord &packet : packets) {
+        m_flows->observe(packet);
+    }
+    if (++m_flowRefreshTick >= 5) {
+        m_flowRefreshTick = 0;
+        refreshFlows();
+    }
 
     m_model->appendPackets(packets);
     if (followTail) {
@@ -405,6 +461,9 @@ void MainWindow::onClearTriggered()
     m_model->clear();
     m_details->clear();
     m_hex->clear();
+    m_flows->reset();
+    m_flowModel->clear();
+    m_proxy->clearFlowFilter();
     updateCounters();
     statusBar()->showMessage(QStringLiteral("Cleared"));
 }
@@ -423,6 +482,15 @@ void MainWindow::loadDemoPackets()
     m_model->setPackets(sss::model::makeSamplePackets());
     m_details->clear();
     m_hex->clear();
+
+    m_flows->reset();
+    for (int row = 0; row < m_model->rowCount(); ++row) {
+        const sss::model::PacketRecord *record = m_model->packetAt(row);
+        if (record != nullptr) {
+            m_flows->observe(*record);
+        }
+    }
+    refreshFlows();
 
     if (m_proxy->rowCount() > 0) {
         m_table->selectRow(0);
@@ -521,8 +589,11 @@ void MainWindow::updateCounters()
     const sss::capture::CaptureStats stats = m_capture->stats();
 
     QString text = QString("%1 packets").arg(m_model->rowCount());
-    if (m_proxy->hasExpression()) {
+    if (m_proxy->isFiltering()) {
         text += QString(" | showing %1").arg(m_proxy->rowCount());
+    }
+    if (m_flows->count() > 0) {
+        text += QString(" | %1 TCP flows").arg(m_flows->count());
     }
     if (stats.dropped > 0 || stats.interfaceDropped > 0) {
         text += QString(" | dropped %1").arg(stats.dropped + stats.interfaceDropped);
@@ -541,6 +612,72 @@ void MainWindow::setHeadless(bool headless)
 int MainWindow::packetCount() const
 {
     return m_model->rowCount();
+}
+
+int MainWindow::flowCount() const
+{
+    return m_flows->count();
+}
+
+// Restricts the packet table to one connection. The proxy keeps the packet
+// model untouched, so clearing the follow filter restores the full list.
+bool MainWindow::followFlow(int flowIndex)
+{
+    const sss::flow::TcpFlow *flow = m_flows->flowAt(flowIndex);
+    if (flow == nullptr) {
+        return false;
+    }
+
+    m_proxy->setFlowFilter(flow->key);
+    updateCounters();
+    if (m_proxy->rowCount() > 0) {
+        m_table->selectRow(0);
+    }
+
+    statusBar()->showMessage(QString("Following %1 <-> %2 (%3 packets, %4)")
+                                 .arg(flow->initiatorText(), flow->responderText())
+                                 .arg(m_proxy->rowCount())
+                                 .arg(flow->stateText()));
+    return true;
+}
+
+void MainWindow::clearFlowFilter()
+{
+    if (!m_proxy->hasFlowFilter()) {
+        return;
+    }
+    m_proxy->clearFlowFilter();
+    updateCounters();
+    statusBar()->showMessage(QStringLiteral("Stopped following the TCP flow"));
+}
+
+// Used by the CLI verification: follow the busiest conversation so the
+// screenshot shows a meaningful subset of packets.
+bool MainWindow::followLargestFlow()
+{
+    int best = -1;
+    quint64 bestPackets = 0;
+    for (int index = 0; index < m_flows->count(); ++index) {
+        const sss::flow::TcpFlow *flow = m_flows->flowAt(index);
+        if (flow != nullptr && flow->packetCount() > bestPackets) {
+            bestPackets = flow->packetCount();
+            best = index;
+        }
+    }
+    return best >= 0 && followFlow(best);
+}
+
+void MainWindow::onFlowActivated(const QModelIndex &index)
+{
+    if (!index.isValid()) {
+        return;
+    }
+    followFlow(index.row());
+}
+
+void MainWindow::onStopFollowing()
+{
+    clearFlowFilter();
 }
 
 bool MainWindow::applyDisplayFilter(const QString &text)

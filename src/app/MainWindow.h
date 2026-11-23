@@ -4,11 +4,13 @@
 #include <QModelIndex>
 
 #include "capture/CaptureThread.h"
+#include "flow/TcpFlowTracker.h"
 #include "model/PacketRecord.h"
 
 class QAction;
 class QCloseEvent;
 class QComboBox;
+class QDockWidget;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
@@ -17,6 +19,7 @@ class QTimer;
 class QTreeWidget;
 
 namespace sss::ui {
+class FlowTableModel;
 class PacketFilterProxyModel;
 class PacketTableModel;
 }
@@ -46,8 +49,12 @@ public:
 
     int packetCount() const;
     int detailTopLevelCount() const;
+    int flowCount() const;
     QString protocolSummary() const;
     bool selectFirstPacketWithProtocol(const QString &protocol);
+    bool followFlow(int flowIndex);
+    bool followLargestFlow();
+    void clearFlowFilter();
     sss::capture::CaptureStats captureStats() const;
 
     bool runSelfTest();
@@ -69,11 +76,15 @@ private slots:
     void onDisplayFilterEdited(const QString &text);
     void onDisplayFilterCommitted();
     void onDisplayFilterCleared();
+    void onFlowActivated(const QModelIndex &index);
+    void onStopFollowing();
 
 private:
     void createCentralWidget();
     void createToolBar();
     void createStatusBar();
+    void createFlowDock();
+    void refreshFlows();
     void loadDevices();
     void loadDemoPackets();
     void showPacketDetail(const sss::model::PacketRecord &record);
@@ -95,6 +106,13 @@ private:
     sss::capture::CaptureThread *m_capture = nullptr;
     QTimer *m_drainTimer = nullptr;
     QTimer *m_filterDebounce = nullptr;
+
+    sss::flow::TcpFlowTracker *m_flows = nullptr;
+    sss::ui::FlowTableModel *m_flowModel = nullptr;
+    QTableView *m_flowTable = nullptr;
+    QDockWidget *m_flowDock = nullptr;
+    int m_flowRefreshTick = 0;
+
     bool m_headless = false;
 };
 

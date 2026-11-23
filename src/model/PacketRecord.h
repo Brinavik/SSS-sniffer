@@ -40,6 +40,7 @@ struct PacketRecord
     quint8 ipProtocol = 0;        // IANA transport protocol number
     quint16 sourcePort = 0;
     quint16 destinationPort = 0;
+    quint8 tcpFlags = 0;          // TCP flag bits, 0 for every non-TCP frame
 };
 
 } // namespace sss::model

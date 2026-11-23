@@ -78,6 +78,7 @@ void dissectTcp(const TransportInput &input, Dissection &out)
 
     out.sourcePort = sourcePort;
     out.destinationPort = destinationPort;
+    out.tcpFlags = flags;
 
     const int safeHeaderLength = qMax(20, headerLength);
     const int declaredPayload = qMax(0, input.declaredBytes - safeHeaderLength);

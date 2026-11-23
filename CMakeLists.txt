@@ -42,6 +42,13 @@ add_library(sss_filter STATIC
 )
 target_link_libraries(sss_filter PUBLIC sss_model Qt6::Core)
 
+# ------------------------------------------------------------------ flow layer
+add_library(sss_flow STATIC
+    src/flow/TcpFlowTracker.h
+    src/flow/TcpFlowTracker.cpp
+)
+target_link_libraries(sss_flow PUBLIC sss_model Qt6::Core)
+
 # ------------------------------------------------------------- protocol layer
 # Pure parsing: raw bytes in, Dissection out. No sockets, no Npcap dependency,
 # so the unit tests can feed it pcap samples without touching a network.
@@ -81,10 +88,12 @@ add_library(sss_ui STATIC
     src/ui/PacketTableModel.cpp
     src/ui/PacketFilterProxyModel.h
     src/ui/PacketFilterProxyModel.cpp
+    src/ui/FlowTableModel.h
+    src/ui/FlowTableModel.cpp
     src/app/MainWindow.h
     src/app/MainWindow.cpp
 )
-target_link_libraries(sss_ui PUBLIC sss_model sss_capture sss_filter Qt6::Widgets)
+target_link_libraries(sss_ui PUBLIC sss_model sss_capture sss_filter sss_flow Qt6::Widgets)
 
 # --------------------------------------------------------------- application
 # WIN32 subsystem: no console window follows the GUI. `--selftest` re-attaches
@@ -98,5 +107,5 @@ target_link_libraries(sss_sniffer PRIVATE sss_ui)
 # ---------------------------------------------------------------------- tests
 enable_testing()
 add_executable(sss_tests tests/protocol_tests.cpp)
-target_link_libraries(sss_tests PRIVATE sss_protocol sss_filter)
+target_link_libraries(sss_tests PRIVATE sss_protocol sss_filter sss_flow)
 add_test(NAME protocol_tests COMMAND sss_tests)

@@ -228,6 +228,7 @@ void CaptureThread::run()
         record.ipProtocol = dissection.ipProtocol;
         record.sourcePort = dissection.sourcePort;
         record.destinationPort = dissection.destinationPort;
+        record.tcpFlags = dissection.tcpFlags;
 
         {
             QMutexLocker locker(&m_mutex);

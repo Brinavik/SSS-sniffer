@@ -23,6 +23,7 @@ struct Dissection
     quint8 ipProtocol = 0;     // IANA protocol number of the transport header
     quint16 sourcePort = 0;
     quint16 destinationPort = 0;
+    quint8 tcpFlags = 0;       // TCP flag bits, 0 for non-TCP frames
 };
 
 // `linkType` uses the libpcap DLT_* numbering (DLT_EN10MB, DLT_NULL, DLT_RAW...).

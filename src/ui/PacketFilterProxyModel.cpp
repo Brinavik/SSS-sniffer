@@ -28,12 +28,32 @@ bool PacketFilterProxyModel::hasExpression() const
     return !m_expression.isEmpty();
 }
 
+void PacketFilterProxyModel::setFlowFilter(const sss::flow::TcpFlowKey &key)
+{
+    m_flowKey = key;
+    m_flowFilterActive = true;
+    invalidateFilter();
+}
+
+void PacketFilterProxyModel::clearFlowFilter()
+{
+    m_flowFilterActive = false;
+    m_flowKey = sss::flow::TcpFlowKey();
+    invalidateFilter();
+}
+
+bool PacketFilterProxyModel::hasFlowFilter() const
+{
+    return m_flowFilterActive;
+}
+
+bool PacketFilterProxyModel::isFiltering() const
+{
+    return m_flowFilterActive || !m_expression.isEmpty();
+}
+
 bool PacketFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex &sourceParent) const
 {
-    if (m_expression.isEmpty()) {
-        return true;
-    }
-
     Q_UNUSED(sourceParent);
 
     const auto *model = qobject_cast<const PacketTableModel *>(sourceModel());
@@ -43,6 +63,17 @@ bool PacketFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex &
 
     const sss::model::PacketRecord *record = model->packetAt(sourceRow);
     if (record == nullptr) {
+        return true;
+    }
+
+    if (m_flowFilterActive) {
+        sss::flow::TcpFlowKey key;
+        if (!sss::flow::TcpFlowKey::fromRecord(*record, &key) || !(key == m_flowKey)) {
+            return false;
+        }
+    }
+
+    if (m_expression.isEmpty()) {
         return true;
     }
 
