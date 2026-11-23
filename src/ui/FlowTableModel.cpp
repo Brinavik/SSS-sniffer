@@ -1,5 +1,6 @@
 #include "ui/FlowTableModel.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace sss::ui {
@@ -22,10 +23,30 @@ FlowTableModel::FlowTableModel(QObject *parent)
 
 void FlowTableModel::setFlows(QVector<sss::flow::TcpFlow> flows)
 {
-    if (flows.size() == m_flows.size()) {
-        m_flows = std::move(flows);
-        if (!m_flows.isEmpty()) {
-            emit dataChanged(index(0, 0), index(static_cast<int>(m_flows.size()) - 1, ColumnCount - 1));
+    // The tracker only ever appends, so an unchanged prefix means the tail is
+    // new flows: insert them incrementally. A full reset would clear the dock
+    // selection every time a new conversation starts during a capture.
+    const bool samePrefix =
+        flows.size() >= m_flows.size()
+        && std::equal(m_flows.cbegin(), m_flows.cend(), flows.cbegin(),
+                      [](const sss::flow::TcpFlow &left, const sss::flow::TcpFlow &right) {
+                          return left.key == right.key;
+                      });
+
+    if (samePrefix) {
+        const int oldSize = static_cast<int>(m_flows.size());
+        const int newSize = static_cast<int>(flows.size());
+
+        if (newSize > oldSize) {
+            beginInsertRows(QModelIndex(), oldSize, newSize - 1);
+            m_flows = std::move(flows);
+            endInsertRows();
+        } else {
+            m_flows = std::move(flows);
+        }
+
+        if (oldSize > 0) {
+            emit dataChanged(index(0, 0), index(oldSize - 1, ColumnCount - 1));
         }
         return;
     }
@@ -104,10 +125,10 @@ QVariant FlowTableModel::data(const QModelIndex &index, int role) const
             return static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter);
         }
     } else if (role == Qt::ToolTipRole) {
-        return QString("Endpoint A: %1\nEndpoint B: %2\n"
-                       "Endpoint A is the side that sent the first captured packet "
+        return QString("Initiator: %1\nResponder: %2\n"
+                       "The initiator is the side that sent the first captured packet "
                        "(the SYN sender when the handshake was captured).\n"
-                       "packets: %3\nbytes: %4\nstate: %5")
+                       "packets: %3\nframe bytes: %4\nstate: %5")
             .arg(flow.initiatorText(),
                  flow.responderText(),
                  QString::number(flow.packetCount()),
@@ -128,13 +149,13 @@ QVariant FlowTableModel::headerData(int section, Qt::Orientation orientation, in
     case ColumnIndex:
         return QStringLiteral("#");
     case ColumnClient:
-        return QStringLiteral("Endpoint A");
+        return QStringLiteral("Initiator");
     case ColumnServer:
-        return QStringLiteral("Endpoint B");
+        return QStringLiteral("Responder");
     case ColumnPackets:
         return QStringLiteral("Packets");
     case ColumnBytes:
-        return QStringLiteral("Bytes");
+        return QStringLiteral("Frame bytes");
     case ColumnDuration:
         return QStringLiteral("Duration");
     case ColumnState:

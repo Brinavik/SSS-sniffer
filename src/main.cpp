@@ -142,15 +142,25 @@ int main(int argc, char *argv[])
             const bool followed = window.followLargestFlow();
             const int flows = window.flowCount();
 
+            // Snapshot the capture numbers before demo data replaces them.
+            const int capturedRows = window.packetCount();
+            const int capturedVisible = window.visiblePacketCount();
+            const QString protocols = window.protocolSummary();
+
             const QString pngPath = reportPath + QStringLiteral(".png");
             if (!window.selectFirstPacketWithProtocol(QStringLiteral("HTTP"))) {
                 window.selectFirstPacketWithProtocol(QStringLiteral("TCP"));
             }
             window.grab().save(pngPath, "PNG");
 
+            // Regression check: after following a flow, switching to demo data
+            // must clear the flow filter and show every demo packet.
+            window.loadDemoPackets();
+            const int demoRows = window.packetCount();
+            const int demoVisible = window.visiblePacketCount();
+
             const sss::capture::CaptureStats stats = window.captureStats();
-            const int rows = window.packetCount();
-            const bool ok = (rows > 0);
+            const bool ok = (capturedRows > 0);
 
             writeReport(reportPath,
                         QStringList()
@@ -160,13 +170,15 @@ int main(int argc, char *argv[])
                             << QString("start_error=%1").arg(startError)
                             << QString("enumeration_error=%1").arg(enumerationError)
                             << QString("elevated=%1").arg(sss::capture::CaptureThread::isElevated() ? "yes" : "no")
-                            << QString("rows=%1").arg(rows)
-                            << QString("protocols=%1").arg(window.protocolSummary())
+                            << QString("rows=%1").arg(capturedRows)
+                            << QString("protocols=%1").arg(protocols)
                             << QString("tcp_flows=%1").arg(flows)
                             << QString("followed_largest_flow=%1").arg(followed ? "yes" : "no")
                             << QString("display_filter=%1").arg(displayFilter)
                             << QString("filter_applied=%1").arg(filterApplied ? "yes" : "no")
-                            << QString("visible=%1").arg(window.visiblePacketCount())
+                            << QString("visible=%1").arg(capturedVisible)
+                            << QString("demo_rows=%1").arg(demoRows)
+                            << QString("demo_visible=%1").arg(demoVisible)
                             << QString("received=%1").arg(stats.received)
                             << QString("dropped=%1").arg(stats.dropped)
                             << QString("queue_dropped=%1").arg(stats.queueDropped)

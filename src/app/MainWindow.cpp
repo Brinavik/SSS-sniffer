@@ -136,6 +136,27 @@ MainWindow::MainWindow(QWidget *parent)
     }
 }
 
+MainWindow::~MainWindow()
+{
+    // The tracker is a plain object, not a QObject child.
+    delete m_flows;
+}
+
+// Single place that drops the current data set. Every entry point that replaces
+// the packet list must go through it, otherwise a stale flow filter can hide
+// the new packets.
+void MainWindow::resetDataset()
+{
+    m_model->clear();
+    m_details->clear();
+    m_hex->clear();
+    m_flows->reset();
+    m_flowModel->clear();
+    m_proxy->clearFlowFilter();
+    m_flowRefreshTick = 0;
+    updateCounters();
+}
+
 void MainWindow::createCentralWidget()
 {
     m_table = new QTableView(this);
@@ -350,13 +371,7 @@ bool MainWindow::startCapture(const QString &deviceName, const QString &bpfFilte
         return false;
     }
 
-    m_model->clear();
-    m_details->clear();
-    m_hex->clear();
-    m_flows->reset();
-    m_flowModel->clear();
-    m_proxy->clearFlowFilter();
-    updateCounters();
+    resetDataset();
 
     // Keep the device selector in sync when the caller (CLI test) picked a
     // device that is not the one currently shown in the combo box.
@@ -458,13 +473,7 @@ void MainWindow::onClearTriggered()
     if (m_capture->isRunning()) {
         stopCapture();
     }
-    m_model->clear();
-    m_details->clear();
-    m_hex->clear();
-    m_flows->reset();
-    m_flowModel->clear();
-    m_proxy->clearFlowFilter();
-    updateCounters();
+    resetDataset();
     statusBar()->showMessage(QStringLiteral("Cleared"));
 }
 
@@ -479,11 +488,11 @@ void MainWindow::onDemoTriggered()
 
 void MainWindow::loadDemoPackets()
 {
+    // Clears the flow filter as well; otherwise a followed flow from the
+    // previous data set would hide every demo packet.
+    resetDataset();
     m_model->setPackets(sss::model::makeSamplePackets());
-    m_details->clear();
-    m_hex->clear();
 
-    m_flows->reset();
     for (int row = 0; row < m_model->rowCount(); ++row) {
         const sss::model::PacketRecord *record = m_model->packetAt(row);
         if (record != nullptr) {

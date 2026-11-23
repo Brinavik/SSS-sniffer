@@ -41,16 +41,22 @@ bool TcpFlowKey::operator==(const TcpFlowKey &other) const
 TcpFlowKey TcpFlowKey::fromEndpoints(const QString &source, quint16 sourcePort,
                                      const QString &destination, quint16 destinationPort)
 {
+    // Addresses are case folded once, here, so that operator== and qHash can
+    // stay exact: two spellings of the same IPv6 address must never end up in
+    // two different flows.
+    const QString first = source.toLower();
+    const QString second = destination.toLower();
+
     TcpFlowKey key;
-    if (endpointLess(source, sourcePort, destination, destinationPort)) {
-        key.addressA = source;
+    if (endpointLess(first, sourcePort, second, destinationPort)) {
+        key.addressA = first;
         key.portA = sourcePort;
-        key.addressB = destination;
+        key.addressB = second;
         key.portB = destinationPort;
     } else {
-        key.addressA = destination;
+        key.addressA = second;
         key.portA = destinationPort;
-        key.addressB = source;
+        key.addressB = first;
         key.portB = sourcePort;
     }
     return key;
@@ -73,6 +79,9 @@ bool TcpFlowKey::fromRecord(const sss::model::PacketRecord &record, TcpFlowKey *
     if (key != nullptr) {
         *key = fromEndpoints(record.source, record.sourcePort,
                              record.destination, record.destinationPort);
+        // Ports and addresses must both be usable; a truncated TCP header has
+        // no ports and must not create a flow.
+        return key->isValid();
     }
     return true;
 }
@@ -174,6 +183,12 @@ bool TcpFlowTracker::observe(const sss::model::PacketRecord &record)
         if (ack) {
             flow.sawSynAck = true;
         } else {
+            // A SYN without ACK starts a new connection. The same 4-tuple can
+            // be reused after TIME_WAIT, so drop the previous session's state;
+            // otherwise the new conversation would be born "CLOSED".
+            flow.sawFin = false;
+            flow.sawRst = false;
+            flow.sawSynAck = false;
             flow.sawSyn = true;
             // The SYN names the client even when we started capturing mid-flow.
             flow.initiatorAddress = record.source;

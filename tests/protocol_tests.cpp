@@ -330,6 +330,66 @@ void testMalformedIpv4()
     check(result.sourcePort == 0, QStringLiteral("IPv4 bad total length has no ports"));
 }
 
+void testFlowEdgeCases()
+{
+    auto makeTcp = [](quint64 index, const QString &source, quint16 sourcePort,
+                      const QString &destination, quint16 destinationPort,
+                      quint8 flags, int length) {
+        sss::model::PacketRecord record;
+        record.index = index;
+        record.source = source;
+        record.destination = destination;
+        record.sourcePort = sourcePort;
+        record.destinationPort = destinationPort;
+        record.ipProtocol = 6;
+        record.ipVersion = 4;
+        record.tcpFlags = flags;
+        record.length = length;
+        record.timestamp = QDateTime::currentDateTime();
+        return record;
+    };
+
+    // Port reuse: a new SYN on a closed 4-tuple starts a fresh session.
+    sss::flow::TcpFlowTracker reuse;
+    reuse.observe(makeTcp(1, QStringLiteral("127.0.0.1"), 50000,
+                          QStringLiteral("127.0.0.1"), 3080, 0x02, 60));
+    reuse.observe(makeTcp(2, QStringLiteral("127.0.0.1"), 50000,
+                          QStringLiteral("127.0.0.1"), 3080, 0x11, 60)); // FIN+ACK
+    check(reuse.flows().first().stateText() == QStringLiteral("CLOSED"),
+          QStringLiteral("flow: closed before reuse"));
+
+    reuse.observe(makeTcp(3, QStringLiteral("127.0.0.1"), 50000,
+                          QStringLiteral("127.0.0.1"), 3080, 0x02, 60)); // new SYN
+    check(reuse.flows().first().stateText() == QStringLiteral("SYN SENT"),
+          QStringLiteral("flow: port reuse starts a new session"));
+
+    reuse.observe(makeTcp(4, QStringLiteral("127.0.0.1"), 3080,
+                          QStringLiteral("127.0.0.1"), 50000, 0x12, 60)); // SYN+ACK
+    check(reuse.flows().first().stateText() == QStringLiteral("ESTABLISHED"),
+          QStringLiteral("flow: port reuse re-establishes"));
+
+    // IPv6 addresses may arrive with different case; one flow, not two.
+    sss::flow::TcpFlowTracker caseTracker;
+    caseTracker.observe(makeTcp(1, QStringLiteral("FE80::1"), 1234,
+                                QStringLiteral("FE80::2"), 80, 0x02, 60));
+    caseTracker.observe(makeTcp(2, QStringLiteral("fe80::2"), 80,
+                                QStringLiteral("fe80::1"), 1234, 0x12, 60));
+    check(caseTracker.count() == 1, QStringLiteral("flow: IPv6 key is case insensitive"));
+
+    // Truncated headers and empty addresses must not create flows.
+    sss::flow::TcpFlowTracker truncated;
+    truncated.observe(makeTcp(1, QStringLiteral("10.0.0.1"), 0,
+                              QStringLiteral("10.0.0.2"), 80, 0x02, 40));
+    check(truncated.count() == 0, QStringLiteral("flow: zero source port ignored"));
+
+    truncated.observe(makeTcp(2, QStringLiteral("10.0.0.1"), 1234,
+                              QStringLiteral("10.0.0.2"), 0, 0x02, 40));
+    check(truncated.count() == 0, QStringLiteral("flow: zero destination port ignored"));
+
+    truncated.observe(makeTcp(3, QString(), 1234, QStringLiteral("10.0.0.2"), 80, 0x02, 40));
+    check(truncated.count() == 0, QStringLiteral("flow: empty address ignored"));
+}
+
 void testFlowTracking()
 {
     sss::flow::TcpFlowTracker tracker;
@@ -455,6 +515,7 @@ int main()
     testIpv6Fragment();
     testMalformedIpv4();
     testFlowTracking();
+    testFlowEdgeCases();
     testFilters();
 
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);

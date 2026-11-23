@@ -34,6 +34,7 @@ class MainWindow : public QMainWindow
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
 
     // Same code path the toolbar uses; also driven by the CLI self tests.
     bool startCapture(const QString &deviceName, const QString &bpfFilter, QString *error);
@@ -46,6 +47,9 @@ public:
     bool applyDisplayFilter(const QString &text);
     bool setDisplayFilter(const QString &text);
     int visiblePacketCount() const;
+
+    // Also used by the CLI regression check: load demo data after a capture.
+    void loadDemoPackets();
 
     int packetCount() const;
     int detailTopLevelCount() const;
@@ -85,8 +89,8 @@ private:
     void createStatusBar();
     void createFlowDock();
     void refreshFlows();
+    void resetDataset();
     void loadDevices();
-    void loadDemoPackets();
     void showPacketDetail(const sss::model::PacketRecord &record);
     void showPacketHex(const sss::model::PacketRecord &record);
     void updateCounters();
