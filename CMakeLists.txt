@@ -1,8 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
-project(sss_sniffer VERSION 0.1.0 LANGUAGES CXX)
+project(sss_sniffer VERSION 0.2.0 LANGUAGES CXX)
 
-# Source files are UTF-8: comments are ASCII, UI strings are Chinese.
-# /utf-8 keeps MSVC from interpreting the sources as GBK (code page 936).
+# Every source file is pure ASCII: comments and UI strings are English only.
+# /utf-8 stays as a safety net so an accidental non-ASCII literal can never be
+# mis-decoded as GBK (code page 936).
 if(MSVC)
     add_compile_options(/utf-8 /W3)
 endif()
@@ -17,10 +18,13 @@ set(CMAKE_AUTORCC ON)
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 # Npcap SDK: pass -DNPCAP_SDK_DIR=<path> or export the environment variable.
-# Nothing links against it yet; the capture module will use it in the next step.
 if(NOT DEFINED NPCAP_SDK_DIR AND DEFINED ENV{NPCAP_SDK_DIR})
     set(NPCAP_SDK_DIR "$ENV{NPCAP_SDK_DIR}")
 endif()
+if(NOT NPCAP_SDK_DIR)
+    message(FATAL_ERROR "NPCAP_SDK_DIR is not set; the capture module needs the Npcap SDK")
+endif()
+message(STATUS "Npcap SDK: ${NPCAP_SDK_DIR}")
 
 # ---------------------------------------------------------------- model layer
 add_library(sss_model STATIC
@@ -31,6 +35,26 @@ add_library(sss_model STATIC
 target_include_directories(sss_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(sss_model PUBLIC Qt6::Core)
 
+# -------------------------------------------------------------- capture layer
+add_library(sss_capture STATIC
+    src/capture/DeviceEnumerator.h
+    src/capture/DeviceEnumerator.cpp
+    src/capture/CaptureThread.h
+    src/capture/CaptureThread.cpp
+    src/capture/FrameSummary.h
+    src/capture/FrameSummary.cpp
+)
+target_include_directories(sss_capture PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    "${NPCAP_SDK_DIR}/Include"
+)
+target_link_libraries(sss_capture PUBLIC
+    sss_model
+    Qt6::Core
+    "${NPCAP_SDK_DIR}/Lib/x64/wpcap.lib"
+    ws2_32
+)
+
 # ------------------------------------------------------------------- ui layer
 add_library(sss_ui STATIC
     src/ui/PacketTableModel.h
@@ -38,7 +62,7 @@ add_library(sss_ui STATIC
     src/app/MainWindow.h
     src/app/MainWindow.cpp
 )
-target_link_libraries(sss_ui PUBLIC sss_model Qt6::Widgets)
+target_link_libraries(sss_ui PUBLIC sss_model sss_capture Qt6::Widgets)
 
 # --------------------------------------------------------------- application
 # WIN32 subsystem: no console window follows the GUI. `--selftest` re-attaches

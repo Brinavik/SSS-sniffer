@@ -28,6 +28,7 @@ public:
     explicit PacketTableModel(QObject *parent = nullptr);
 
     void setPackets(QVector<sss::model::PacketRecord> packets);
+    void appendPackets(const QVector<sss::model::PacketRecord> &packets);
     void clear();
 
     const sss::model::PacketRecord *packetAt(int row) const;

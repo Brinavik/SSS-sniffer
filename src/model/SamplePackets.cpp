@@ -480,7 +480,7 @@ FrameParts makeTcpSyn(quint32 sequence)
     parts.ipSource = QStringLiteral("192.168.1.100");
     parts.ipDestination = QStringLiteral("140.82.114.4");
     parts.summaryProtocol = QStringLiteral("TCP");
-    parts.summaryInfo = QStringLiteral("52315 \u2192 443 [SYN] Seq=0 Win=64240 Len=0 MSS=1460");
+    parts.summaryInfo = QStringLiteral("52315 -> 443 [SYN] Seq=0 Win=64240 Len=0 MSS=1460");
     parts.protocolChain = QStringLiteral("eth:ethertype:ip:tcp");
 
     parts.segment = buildTcp(52315, 443, 0, 0, 0x02, 64240, QByteArray(),
@@ -503,7 +503,7 @@ FrameParts makeTcpAck(quint32 sequence)
     parts.ipSource = QStringLiteral("140.82.114.4");
     parts.ipDestination = QStringLiteral("192.168.1.100");
     parts.summaryProtocol = QStringLiteral("TCP");
-    parts.summaryInfo = QStringLiteral("443 \u2192 52315 [ACK] Seq=1 Ack=1 Win=64240 Len=0");
+    parts.summaryInfo = QStringLiteral("443 -> 52315 [ACK] Seq=1 Ack=1 Win=64240 Len=0");
     parts.protocolChain = QStringLiteral("eth:ethertype:ip:tcp");
 
     parts.segment = buildTcp(443, 52315, 1, 1, 0x10, 64240, QByteArray(),

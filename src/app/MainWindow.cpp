@@ -1,25 +1,36 @@
 #include "app/MainWindow.h"
 
 #include <QAction>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QFont>
 #include <QFontDatabase>
-#include <QItemSelectionModel>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
-#include <QSortFilterProxyModel>
+#include <QScrollBar>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QTableView>
 #include <QTextCursor>
+#include <QTimer>
 #include <QToolBar>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>
+#  include <shellapi.h>
+#endif
+
+#include "capture/DeviceEnumerator.h"
 #include "model/SamplePackets.h"
 #include "ui/PacketTableModel.h"
 
@@ -75,14 +86,13 @@ void addDetailNodes(QTreeWidgetItem *parent, const QVector<sss::model::DetailNod
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("SSS Sniffer \u2014 实验 1A  [示例数据]"));
+    setWindowTitle(QStringLiteral("SSS Sniffer - Experiment 1A"));
     resize(1280, 820);
 
     m_model = new sss::ui::PacketTableModel(this);
-    m_proxy = new QSortFilterProxyModel(this);
-    m_proxy->setSourceModel(m_model);
-    m_proxy->setFilterCaseSensitivity(Qt::CaseInsensitive);
-    m_proxy->setFilterKeyColumn(-1); // match any visible column
+    m_capture = new sss::capture::CaptureThread(this);
+    m_drainTimer = new QTimer(this);
+    m_drainTimer->setInterval(100);
 
     createCentralWidget();
     createToolBar();
@@ -90,14 +100,27 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_table->selectionModel(), &QItemSelectionModel::currentRowChanged,
             this, &MainWindow::onCurrentRowChanged);
+    connect(m_capture, &sss::capture::CaptureThread::captureFailed,
+            this, &MainWindow::onCaptureFailed);
+    connect(m_capture, &sss::capture::CaptureThread::captureStopped,
+            this, &MainWindow::onCaptureStopped);
+    connect(m_drainTimer, &QTimer::timeout, this, &MainWindow::pollCapture);
 
-    loadDemoPackets();
+    loadDevices();
+    updateCounters();
+
+    if (sss::capture::CaptureThread::isElevated()) {
+        statusBar()->showMessage(QStringLiteral("Ready"));
+    } else {
+        statusBar()->showMessage(
+            QStringLiteral("Not elevated: press Elevate before starting a capture"));
+    }
 }
 
 void MainWindow::createCentralWidget()
 {
     m_table = new QTableView(this);
-    m_table->setModel(m_proxy);
+    m_table->setModel(m_model);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -107,16 +130,16 @@ void MainWindow::createCentralWidget()
     m_table->verticalHeader()->setDefaultSectionSize(22);
     m_table->horizontalHeader()->setStretchLastSection(true);
     m_table->horizontalHeader()->setHighlightSections(false);
-    m_table->setColumnWidth(sss::ui::PacketTableModel::ColumnNo, 64);
-    m_table->setColumnWidth(sss::ui::PacketTableModel::ColumnTime, 120);
-    m_table->setColumnWidth(sss::ui::PacketTableModel::ColumnSource, 140);
-    m_table->setColumnWidth(sss::ui::PacketTableModel::ColumnDestination, 140);
-    m_table->setColumnWidth(sss::ui::PacketTableModel::ColumnProtocol, 80);
+    m_table->setColumnWidth(sss::ui::PacketTableModel::ColumnNo, 60);
+    m_table->setColumnWidth(sss::ui::PacketTableModel::ColumnTime, 110);
+    m_table->setColumnWidth(sss::ui::PacketTableModel::ColumnSource, 150);
+    m_table->setColumnWidth(sss::ui::PacketTableModel::ColumnDestination, 150);
+    m_table->setColumnWidth(sss::ui::PacketTableModel::ColumnProtocol, 70);
     m_table->setColumnWidth(sss::ui::PacketTableModel::ColumnLength, 70);
 
     m_details = new QTreeWidget(this);
     m_details->setColumnCount(2);
-    m_details->setHeaderLabels({QStringLiteral("字段"), QStringLiteral("值")});
+    m_details->setHeaderLabels({QStringLiteral("Field"), QStringLiteral("Value")});
     m_details->setAlternatingRowColors(true);
     m_details->setRootIsDecorated(true);
     m_details->header()->setStretchLastSection(true);
@@ -127,7 +150,7 @@ void MainWindow::createCentralWidget()
     QFont monospace = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     monospace.setPointSize(10);
     m_hex->setFont(monospace);
-    m_hex->setPlaceholderText(QStringLiteral("选中一个数据包后显示原始字节"));
+    m_hex->setPlaceholderText(QStringLiteral("Select a packet to inspect its bytes"));
 
     auto *bottom = new QSplitter(Qt::Horizontal, this);
     bottom->addWidget(m_details);
@@ -146,49 +169,218 @@ void MainWindow::createCentralWidget()
 
 void MainWindow::createToolBar()
 {
-    QToolBar *toolBar = addToolBar(QStringLiteral("工具栏"));
+    QToolBar *toolBar = addToolBar(QStringLiteral("Main"));
     toolBar->setMovable(false);
     toolBar->setFloatable(false);
 
-    QAction *startAction = toolBar->addAction(QStringLiteral("开始"));
-    connect(startAction, &QAction::triggered, this, &MainWindow::onStartTriggered);
+    m_startAction = toolBar->addAction(QStringLiteral("Start"));
+    connect(m_startAction, &QAction::triggered, this, &MainWindow::onStartTriggered);
 
-    QAction *stopAction = toolBar->addAction(QStringLiteral("停止"));
-    stopAction->setEnabled(false);
+    m_stopAction = toolBar->addAction(QStringLiteral("Stop"));
+    m_stopAction->setEnabled(false);
+    connect(m_stopAction, &QAction::triggered, this, &MainWindow::onStopTriggered);
 
-    QAction *clearAction = toolBar->addAction(QStringLiteral("清空"));
+    QAction *clearAction = toolBar->addAction(QStringLiteral("Clear"));
     connect(clearAction, &QAction::triggered, this, &MainWindow::onClearTriggered);
 
-    QAction *aboutAction = toolBar->addAction(QStringLiteral("关于"));
+    QAction *demoAction = toolBar->addAction(QStringLiteral("Demo"));
+    connect(demoAction, &QAction::triggered, this, &MainWindow::onDemoTriggered);
+
+    QAction *elevateAction = toolBar->addAction(QStringLiteral("Elevate"));
+    elevateAction->setEnabled(!sss::capture::CaptureThread::isElevated());
+    elevateAction->setToolTip(QStringLiteral("Restart the application with administrator rights"));
+    connect(elevateAction, &QAction::triggered, this, &MainWindow::onElevateTriggered);
+
+    QAction *aboutAction = toolBar->addAction(QStringLiteral("About"));
     connect(aboutAction, &QAction::triggered, this, &MainWindow::onAboutTriggered);
 
     toolBar->addSeparator();
-    toolBar->addWidget(new QLabel(QStringLiteral(" 网卡: "), this));
+    toolBar->addWidget(new QLabel(QStringLiteral(" Device: "), this));
     m_deviceSelector = new QComboBox(this);
-    m_deviceSelector->addItem(QStringLiteral("（capture 模块待接入）"));
-    m_deviceSelector->setMinimumWidth(280);
-    m_deviceSelector->setEnabled(false);
+    m_deviceSelector->setMinimumWidth(380);
     toolBar->addWidget(m_deviceSelector);
 
-    toolBar->addSeparator();
-    toolBar->addWidget(new QLabel(QStringLiteral(" 过滤: "), this));
-    m_filter = new QLineEdit(this);
-    m_filter->setPlaceholderText(QStringLiteral("输入 IP / 端口 / 协议关键字（简易文本过滤）"));
-    m_filter->setMinimumWidth(340);
-    m_filter->setClearButtonEnabled(true);
-    toolBar->addWidget(m_filter);
+    QAction *refreshAction = toolBar->addAction(QStringLiteral("Refresh"));
+    refreshAction->setToolTip(QStringLiteral("Re-enumerate capture devices"));
+    connect(refreshAction, &QAction::triggered, this, &MainWindow::onRefreshDevices);
 
-    connect(m_filter, &QLineEdit::textChanged, this, &MainWindow::onFilterChanged);
+    toolBar->addSeparator();
+    toolBar->addWidget(new QLabel(QStringLiteral(" Filter: "), this));
+    m_filterEdit = new QLineEdit(this);
+    m_filterEdit->setPlaceholderText(QStringLiteral("BPF capture filter, e.g. tcp port 80 (empty = all)"));
+    m_filterEdit->setMinimumWidth(320);
+    m_filterEdit->setClearButtonEnabled(true);
+    toolBar->addWidget(m_filterEdit);
 }
 
 void MainWindow::createStatusBar()
 {
-    m_demoBadge = new QLabel(QStringLiteral(" DEMO 示例数据 "), this);
-    m_demoBadge->setStyleSheet(
-        QStringLiteral("QLabel { background: #F5A623; color: #1B1B1B; "
-                       "border-radius: 3px; padding: 1px 6px; }"));
-    statusBar()->addPermanentWidget(m_demoBadge);
-    statusBar()->showMessage(QStringLiteral("就绪"));
+    m_countLabel = new QLabel(QStringLiteral("0 packets"), this);
+    statusBar()->addPermanentWidget(m_countLabel);
+
+    m_privilegeLabel = new QLabel(this);
+    if (sss::capture::CaptureThread::isElevated()) {
+        m_privilegeLabel->setText(QStringLiteral(" ADMIN "));
+        m_privilegeLabel->setStyleSheet(
+            QStringLiteral("QLabel { background: #2E7D32; color: white; "
+                           "border-radius: 3px; padding: 1px 6px; }"));
+    } else {
+        m_privilegeLabel->setText(QStringLiteral(" NOT ELEVATED "));
+        m_privilegeLabel->setStyleSheet(
+            QStringLiteral("QLabel { background: #C62828; color: white; "
+                           "border-radius: 3px; padding: 1px 6px; }"));
+    }
+    statusBar()->addPermanentWidget(m_privilegeLabel);
+}
+
+void MainWindow::loadDevices()
+{
+    m_deviceSelector->clear();
+
+    QString error;
+    const QVector<sss::capture::DeviceInfo> devices = sss::capture::DeviceEnumerator::list(&error);
+
+    for (const sss::capture::DeviceInfo &device : devices) {
+        QString label = device.description.isEmpty() ? device.name : device.description;
+        if (!device.addresses.isEmpty()) {
+            label += QString(" - %1").arg(device.addresses.first());
+        }
+        if (device.loopback) {
+            label = QStringLiteral("[loopback] ") + label;
+        }
+        m_deviceSelector->addItem(label, device.name);
+    }
+
+    if (devices.isEmpty()) {
+        statusBar()->showMessage(error.isEmpty()
+                                     ? QStringLiteral("No capture devices found")
+                                     : QString("Device enumeration failed: %1").arg(error));
+    }
+}
+
+void MainWindow::onRefreshDevices()
+{
+    loadDevices();
+    statusBar()->showMessage(QString("Devices refreshed: %1 found").arg(m_deviceSelector->count()));
+}
+
+bool MainWindow::startCapture(const QString &deviceName, const QString &bpfFilter, QString *error)
+{
+    if (m_capture->isRunning()) {
+        if (error != nullptr) {
+            *error = QStringLiteral("capture is already running");
+        }
+        return false;
+    }
+
+    m_model->clear();
+    m_details->clear();
+    m_hex->clear();
+    updateCounters();
+
+    // Keep the device selector in sync when the caller (CLI test) picked a
+    // device that is not the one currently shown in the combo box.
+    const int comboIndex = m_deviceSelector->findData(deviceName);
+    if (comboIndex >= 0) {
+        m_deviceSelector->setCurrentIndex(comboIndex);
+    }
+
+    const bool started = m_capture->startCapture(deviceName, bpfFilter, error);
+    if (!started) {
+        return false;
+    }
+
+    m_drainTimer->start();
+    m_startAction->setEnabled(false);
+    m_stopAction->setEnabled(true);
+    statusBar()->showMessage(bpfFilter.isEmpty()
+                                 ? QString("Capturing on %1 ...").arg(deviceName)
+                                 : QString("Capturing on %1 with filter \"%2\" ...").arg(deviceName, bpfFilter));
+    return true;
+}
+
+void MainWindow::stopCapture()
+{
+    if (!m_capture->isRunning()) {
+        return;
+    }
+
+    m_capture->stopCapture();
+    m_drainTimer->stop();
+    pollCapture();
+
+    m_startAction->setEnabled(true);
+    m_stopAction->setEnabled(false);
+    updateCounters();
+    statusBar()->showMessage(QString("Capture stopped: %1 packets").arg(m_model->rowCount()));
+}
+
+void MainWindow::pollCapture()
+{
+    const QVector<sss::model::PacketRecord> packets = m_capture->takePending(2000);
+    if (packets.isEmpty()) {
+        return;
+    }
+
+    QScrollBar *scrollBar = m_table->verticalScrollBar();
+    const bool followTail = scrollBar->value() >= scrollBar->maximum() - 4;
+
+    m_model->appendPackets(packets);
+    if (followTail) {
+        m_table->scrollToBottom();
+    }
+    // Show details for the first packet instead of an empty lower half.
+    if (!m_table->currentIndex().isValid()) {
+        m_table->selectRow(0);
+    }
+    updateCounters();
+}
+
+void MainWindow::onStartTriggered()
+{
+    if (m_capture->isRunning()) {
+        return;
+    }
+
+    const QString device = m_deviceSelector->currentData().toString();
+    if (device.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Select a capture device first"));
+        return;
+    }
+
+    QString error;
+    if (!startCapture(device, m_filterEdit->text().trimmed(), &error)) {
+        statusBar()->showMessage(QString("Cannot start capture: %1").arg(error));
+        if (!m_headless) {
+            QMessageBox::warning(this, QStringLiteral("Capture"), error);
+        }
+    }
+}
+
+void MainWindow::onStopTriggered()
+{
+    stopCapture();
+}
+
+void MainWindow::onClearTriggered()
+{
+    if (m_capture->isRunning()) {
+        stopCapture();
+    }
+    m_model->clear();
+    m_details->clear();
+    m_hex->clear();
+    updateCounters();
+    statusBar()->showMessage(QStringLiteral("Cleared"));
+}
+
+void MainWindow::onDemoTriggered()
+{
+    if (m_capture->isRunning()) {
+        statusBar()->showMessage(QStringLiteral("Stop the capture before loading demo data"));
+        return;
+    }
+    loadDemoPackets();
 }
 
 void MainWindow::loadDemoPackets()
@@ -197,12 +389,65 @@ void MainWindow::loadDemoPackets()
     m_details->clear();
     m_hex->clear();
 
-    if (m_proxy->rowCount() > 0) {
+    if (m_model->rowCount() > 0) {
         m_table->selectRow(0);
     }
+    updateCounters();
+    statusBar()->showMessage(QString("Demo data loaded: %1 synthetic packets").arg(m_model->rowCount()));
+}
 
-    statusBar()->showMessage(
-        QStringLiteral("已载入 %1 个示例数据包（尚未接入抓包）").arg(m_model->rowCount()));
+void MainWindow::onElevateTriggered()
+{
+#ifdef _WIN32
+    const QString executable = QCoreApplication::applicationFilePath();
+    const std::wstring path = executable.toStdWString();
+    const HINSTANCE result = ::ShellExecuteW(nullptr, L"runas", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<qintptr>(result) > 32) {
+        QCoreApplication::quit();
+    } else {
+        statusBar()->showMessage(QStringLiteral("Elevation was cancelled"));
+    }
+#endif
+}
+
+void MainWindow::onAboutTriggered()
+{
+    QMessageBox::about(this,
+                       QStringLiteral("About SSS Sniffer"),
+                       QStringLiteral("<b>SSS Sniffer 0.1</b><br/>"
+                                      "Software and System Security - Experiment 1A<br/>"
+                                      "A Qt based packet sniffer built on the Npcap API."));
+}
+
+void MainWindow::onCaptureFailed(const QString &message)
+{
+    m_drainTimer->stop();
+    m_startAction->setEnabled(true);
+    m_stopAction->setEnabled(false);
+    updateCounters();
+    statusBar()->showMessage(QString("Capture failed: %1").arg(message));
+
+    if (m_headless) {
+        return;
+    }
+
+    QString text = message;
+    if (!sss::capture::CaptureThread::isElevated()) {
+        text += QStringLiteral("\n\nNpcap requires administrator privileges. "
+                               "Use the Elevate button to restart the application elevated.");
+    }
+    QMessageBox::warning(this, QStringLiteral("Capture failed"), text);
+}
+
+void MainWindow::onCaptureStopped()
+{
+    if (!m_capture->isRunning()) {
+        m_drainTimer->stop();
+        pollCapture();
+        m_startAction->setEnabled(true);
+        m_stopAction->setEnabled(false);
+        updateCounters();
+    }
 }
 
 void MainWindow::onCurrentRowChanged(const QModelIndex &current, const QModelIndex &previous)
@@ -212,8 +457,7 @@ void MainWindow::onCurrentRowChanged(const QModelIndex &current, const QModelInd
         return;
     }
 
-    const QModelIndex sourceIndex = m_proxy->mapToSource(current);
-    const sss::model::PacketRecord *record = m_model->packetAt(sourceIndex.row());
+    const sss::model::PacketRecord *record = m_model->packetAt(current.row());
     if (record == nullptr) {
         return;
     }
@@ -236,39 +480,28 @@ void MainWindow::showPacketHex(const sss::model::PacketRecord &record)
     m_hex->moveCursor(QTextCursor::Start);
 }
 
-void MainWindow::onFilterChanged(const QString &text)
+void MainWindow::updateCounters()
 {
-    m_proxy->setFilterFixedString(text);
-    statusBar()->showMessage(
-        QStringLiteral("过滤 \"%1\" 命中 %2 条（简易文本过滤，协议/BPF 过滤待接入）")
-            .arg(text, QString::number(m_proxy->rowCount())));
+    const sss::capture::CaptureStats stats = m_capture->stats();
+
+    QString text = QString("%1 packets").arg(m_model->rowCount());
+    if (stats.dropped > 0 || stats.interfaceDropped > 0) {
+        text += QString(" | dropped %1").arg(stats.dropped + stats.interfaceDropped);
+    }
+    if (stats.queueDropped > 0) {
+        text += QString(" | queue drops %1").arg(stats.queueDropped);
+    }
+    m_countLabel->setText(text);
 }
 
-void MainWindow::onClearTriggered()
+void MainWindow::setHeadless(bool headless)
 {
-    m_model->clear();
-    m_details->clear();
-    m_hex->clear();
-    statusBar()->showMessage(QStringLiteral("已清空列表"));
+    m_headless = headless;
 }
 
-void MainWindow::onStartTriggered()
+int MainWindow::packetCount() const
 {
-    statusBar()->showMessage(
-        QStringLiteral("抓包尚未接入：下一步接入 Npcap 网卡枚举与抓包线程"));
-}
-
-void MainWindow::onAboutTriggered()
-{
-    QMessageBox::about(this, QStringLiteral("关于 SSS Sniffer"),
-                       QStringLiteral("<b>SSS Sniffer 0.1</b><br/>"
-                                      "软件与系统安全 实验 1A：带 GUI 的网络嗅探器<br/>"
-                                      "当前界面使用示例数据，尚未接入 Npcap。"));
-}
-
-int MainWindow::visiblePacketCount() const
-{
-    return m_proxy->rowCount();
+    return m_model->rowCount();
 }
 
 int MainWindow::detailTopLevelCount() const
@@ -276,12 +509,19 @@ int MainWindow::detailTopLevelCount() const
     return m_details->topLevelItemCount();
 }
 
+sss::capture::CaptureStats MainWindow::captureStats() const
+{
+    return m_capture->stats();
+}
+
 bool MainWindow::runSelfTest()
 {
+    setHeadless(true);
+
+    loadDemoPackets();
+    QCoreApplication::processEvents();
+
     if (m_model->rowCount() == 0) {
-        return false;
-    }
-    if (m_proxy->rowCount() != m_model->rowCount()) {
         return false;
     }
 
@@ -295,13 +535,14 @@ bool MainWindow::runSelfTest()
         return false;
     }
 
-    m_filter->setText(QStringLiteral("ICMP"));
-    QCoreApplication::processEvents();
-    const int icmpRows = m_proxy->rowCount();
-    m_filter->clear();
-    QCoreApplication::processEvents();
+    // Device enumeration must work without elevation.
+    return m_deviceSelector->count() > 0;
+}
 
-    return icmpRows > 0 && icmpRows < m_model->rowCount();
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    stopCapture();
+    QMainWindow::closeEvent(event);
 }
 
 } // namespace sss::app

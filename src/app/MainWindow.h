@@ -1,16 +1,19 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QModelIndex>
 
+#include "capture/CaptureThread.h"
 #include "model/PacketRecord.h"
 
+class QAction;
+class QCloseEvent;
 class QComboBox;
 class QLabel;
 class QLineEdit;
-class QModelIndex;
 class QPlainTextEdit;
-class QSortFilterProxyModel;
 class QTableView;
+class QTimer;
 class QTreeWidget;
 
 namespace sss::ui {
@@ -20,7 +23,7 @@ class PacketTableModel;
 namespace sss::app {
 
 // Main window: packet list on top, protocol tree and hex dump below.
-// This is the shell only; it is currently fed by synthesized demo frames.
+// Packets come either from the live capture thread or from the demo generator.
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -28,36 +31,56 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = nullptr);
 
-    int visiblePacketCount() const;
-    int detailTopLevelCount() const;
+    // Same code path the toolbar uses; also driven by the CLI self tests.
+    bool startCapture(const QString &deviceName, const QString &bpfFilter, QString *error);
+    void stopCapture();
+    void pollCapture();
+    void setHeadless(bool headless);
 
-    // Exercises the UI wiring without a display: fills the table, selects the
-    // first row and checks that the detail tree and hex pane got populated.
+    int packetCount() const;
+    int detailTopLevelCount() const;
+    sss::capture::CaptureStats captureStats() const;
+
     bool runSelfTest();
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
 
 private slots:
     void onCurrentRowChanged(const QModelIndex &current, const QModelIndex &previous);
-    void onFilterChanged(const QString &text);
-    void onClearTriggered();
     void onStartTriggered();
+    void onStopTriggered();
+    void onClearTriggered();
+    void onDemoTriggered();
+    void onElevateTriggered();
     void onAboutTriggered();
+    void onRefreshDevices();
+    void onCaptureFailed(const QString &message);
+    void onCaptureStopped();
 
 private:
     void createCentralWidget();
     void createToolBar();
     void createStatusBar();
+    void loadDevices();
     void loadDemoPackets();
     void showPacketDetail(const sss::model::PacketRecord &record);
     void showPacketHex(const sss::model::PacketRecord &record);
+    void updateCounters();
 
     sss::ui::PacketTableModel *m_model = nullptr;
-    QSortFilterProxyModel *m_proxy = nullptr;
     QTableView *m_table = nullptr;
     QTreeWidget *m_details = nullptr;
     QPlainTextEdit *m_hex = nullptr;
-    QLineEdit *m_filter = nullptr;
+    QLineEdit *m_filterEdit = nullptr;
     QComboBox *m_deviceSelector = nullptr;
-    QLabel *m_demoBadge = nullptr;
+    QLabel *m_countLabel = nullptr;
+    QLabel *m_privilegeLabel = nullptr;
+    QAction *m_startAction = nullptr;
+    QAction *m_stopAction = nullptr;
+    sss::capture::CaptureThread *m_capture = nullptr;
+    QTimer *m_drainTimer = nullptr;
+    bool m_headless = false;
 };
 
 } // namespace sss::app

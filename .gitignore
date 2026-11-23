@@ -1,4 +1,4 @@
-# ---------- CMake / 构建产物 ----------
+# ---------- CMake / build output ----------
 build/
 out/
 cmake-build-*/
@@ -21,7 +21,7 @@ install_manifest.txt
 *.opendb
 *.ipch
 
-# ---------- 编译中间文件 ----------
+# ---------- object files ----------
 *.obj
 *.o
 *.pdb
@@ -31,7 +31,7 @@ install_manifest.txt
 *.exe
 *.dll
 
-# ---------- Qt 生成物 ----------
+# ---------- Qt generated files ----------
 moc_*.cpp
 moc_predefs.h
 qrc_*.cpp
@@ -39,13 +39,13 @@ ui_*.h
 *.moc
 .qmake.stash
 
-# ---------- 运行时抓包数据 ----------
+# ---------- capture output ----------
 captures/
 *.pcap
 *.pcapng
 *.log
 
-# ---------- 编辑器 / 系统 ----------
+# ---------- editors / OS ----------
 .vscode/
 .idea/
 Thumbs.db

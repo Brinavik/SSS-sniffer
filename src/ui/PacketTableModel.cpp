@@ -16,6 +16,19 @@ void PacketTableModel::setPackets(QVector<sss::model::PacketRecord> packets)
     endResetModel();
 }
 
+void PacketTableModel::appendPackets(const QVector<sss::model::PacketRecord> &packets)
+{
+    if (packets.isEmpty()) {
+        return;
+    }
+
+    const int first = static_cast<int>(m_packets.size());
+    const int last = first + static_cast<int>(packets.size()) - 1;
+    beginInsertRows(QModelIndex(), first, last);
+    m_packets += packets;
+    endInsertRows();
+}
+
 void PacketTableModel::clear()
 {
     setPackets({});
@@ -34,7 +47,7 @@ int PacketTableModel::rowCount(const QModelIndex &parent) const
     if (parent.isValid()) {
         return 0;
     }
-    return m_packets.size();
+    return static_cast<int>(m_packets.size());
 }
 
 int PacketTableModel::columnCount(const QModelIndex &parent) const
@@ -92,19 +105,19 @@ QVariant PacketTableModel::headerData(int section, Qt::Orientation orientation, 
 
     switch (section) {
     case ColumnNo:
-        return QStringLiteral("序号");
+        return QStringLiteral("No.");
     case ColumnTime:
-        return QStringLiteral("时间");
+        return QStringLiteral("Time");
     case ColumnSource:
-        return QStringLiteral("源地址");
+        return QStringLiteral("Source");
     case ColumnDestination:
-        return QStringLiteral("目的地址");
+        return QStringLiteral("Destination");
     case ColumnProtocol:
-        return QStringLiteral("协议");
+        return QStringLiteral("Protocol");
     case ColumnLength:
-        return QStringLiteral("长度");
+        return QStringLiteral("Length");
     case ColumnInfo:
-        return QStringLiteral("信息");
+        return QStringLiteral("Info");
     default:
         return {};
     }
