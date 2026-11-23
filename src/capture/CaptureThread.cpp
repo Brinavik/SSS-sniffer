@@ -2,8 +2,6 @@
 
 #include <QMutexLocker>
 
-#include "capture/FrameSummary.h"
-
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -14,13 +12,15 @@
 
 #include <pcap.h>
 
+#include "protocol/Dissector.h"
+
 namespace sss::capture {
 namespace {
 
 constexpr int kSnaplen = 65536;
 constexpr int kReadTimeoutMs = 200;
 constexpr int kStatsInterval = 256;
-constexpr qsizetype kMaxPending = 20000;
+constexpr std::size_t kMaxPending = 20000;
 
 QString errorText(const char *buffer)
 {
@@ -112,13 +112,18 @@ void CaptureThread::stopCapture()
 QVector<sss::model::PacketRecord> CaptureThread::takePending(int maxCount)
 {
     QMutexLocker locker(&m_mutex);
-    if (m_pending.isEmpty() || maxCount <= 0) {
+
+    if (m_pending.empty() || maxCount <= 0) {
         return {};
     }
 
-    const qsizetype count = qMin<qsizetype>(static_cast<qsizetype>(maxCount), m_pending.size());
-    QVector<sss::model::PacketRecord> batch = m_pending.mid(0, count);
-    m_pending.remove(0, count);
+    const std::size_t count = qMin<std::size_t>(static_cast<std::size_t>(maxCount), m_pending.size());
+    QVector<sss::model::PacketRecord> batch;
+    batch.reserve(static_cast<int>(count));
+    for (std::size_t i = 0; i < count; ++i) {
+        batch.append(std::move(m_pending.front()));
+        m_pending.pop_front();
+    }
     return batch;
 }
 
@@ -162,7 +167,13 @@ void CaptureThread::run()
             emit captureFailed(message);
             return;
         }
-        pcap_setfilter(handle, &program);
+        if (pcap_setfilter(handle, &program) != 0) {
+            const QString message = QString("cannot apply capture filter: %1").arg(errorText(pcap_geterr(handle)));
+            pcap_freecode(&program);
+            pcap_close(handle);
+            emit captureFailed(message);
+            return;
+        }
         pcap_freecode(&program);
     }
 
@@ -201,24 +212,29 @@ void CaptureThread::run()
         record.length = static_cast<int>(header->len);
         record.raw = QByteArray(reinterpret_cast<const char *>(data), static_cast<int>(header->caplen));
 
-        const FrameSummary summary = summarizeFrame(data,
-                                                    static_cast<int>(header->caplen),
-                                                    static_cast<int>(header->len),
-                                                    linkType,
-                                                    record.index,
-                                                    record.timestamp);
-        record.source = summary.source;
-        record.destination = summary.destination;
-        record.protocol = summary.protocol;
-        record.info = summary.info;
-        record.details = summary.details;
+        const sss::protocol::Dissection dissection =
+            sss::protocol::dissectFrame(data,
+                                        static_cast<int>(header->caplen),
+                                        static_cast<int>(header->len),
+                                        linkType,
+                                        record.index,
+                                        record.timestamp);
+        record.source = dissection.source;
+        record.destination = dissection.destination;
+        record.protocol = dissection.protocol;
+        record.info = dissection.info;
+        record.details = dissection.details;
+        record.ipVersion = dissection.ipVersion;
+        record.ipProtocol = dissection.ipProtocol;
+        record.sourcePort = dissection.sourcePort;
+        record.destinationPort = dissection.destinationPort;
 
         {
             QMutexLocker locker(&m_mutex);
             if (m_pending.size() >= kMaxPending) {
                 ++m_stats.queueDropped;
             } else {
-                m_pending.append(record);
+                m_pending.push_back(std::move(record));
             }
             ++m_stats.received;
             ++sinceStats;

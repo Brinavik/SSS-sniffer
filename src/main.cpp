@@ -99,23 +99,40 @@ int main(int argc, char *argv[])
                                        ? arguments.at(index + 1)
                                        : QStringLiteral("capture-test.txt");
 
+        // Optional second argument: the BPF filter (defaults to "ip").
+        // An IPv6 filter also switches the traffic generator to ping ::1.
+        const QString filter = (index + 2 < arguments.size())
+                                   ? arguments.at(index + 2)
+                                   : QStringLiteral("ip");
+        const bool ipv6 = filter.contains(QLatin1Char('6'));
+
         QString enumerationError;
         const QString device = pickLoopbackDevice(&enumerationError);
 
         QString startError;
-        const bool started = window.startCapture(device, QStringLiteral("ip"), &startError);
+        const bool started = window.startCapture(device, filter, &startError);
 
         // Ping the loopback interface so there is guaranteed traffic to capture.
-        QTimer::singleShot(200, &app, []() {
-            QProcess::startDetached(QStringLiteral("ping.exe"),
-                                    {QStringLiteral("-n"), QStringLiteral("8"), QStringLiteral("127.0.0.1")});
+        QTimer::singleShot(200, &app, [ipv6]() {
+            QStringList pingArguments;
+            if (ipv6) {
+                pingArguments << QStringLiteral("-6") << QStringLiteral("-n")
+                              << QStringLiteral("8") << QStringLiteral("::1");
+            } else {
+                pingArguments << QStringLiteral("-n") << QStringLiteral("8")
+                              << QStringLiteral("127.0.0.1");
+            }
+            QProcess::startDetached(QStringLiteral("ping.exe"), pingArguments);
         });
 
-        QTimer::singleShot(7000, &app, [&app, &window, reportPath, device, started, startError, enumerationError]() {
+        QTimer::singleShot(7000, &app, [&app, &window, reportPath, device, filter, started, startError, enumerationError]() {
             window.stopCapture();
             window.pollCapture();
 
             const QString pngPath = reportPath + QStringLiteral(".png");
+            if (!window.selectFirstPacketWithProtocol(QStringLiteral("HTTP"))) {
+                window.selectFirstPacketWithProtocol(QStringLiteral("TCP"));
+            }
             window.grab().save(pngPath, "PNG");
 
             const sss::capture::CaptureStats stats = window.captureStats();
@@ -125,11 +142,13 @@ int main(int argc, char *argv[])
             writeReport(reportPath,
                         QStringList()
                             << QString("device=%1").arg(device)
+                            << QString("filter=%1").arg(filter)
                             << QString("started=%1").arg(started ? "yes" : "no")
                             << QString("start_error=%1").arg(startError)
                             << QString("enumeration_error=%1").arg(enumerationError)
                             << QString("elevated=%1").arg(sss::capture::CaptureThread::isElevated() ? "yes" : "no")
                             << QString("rows=%1").arg(rows)
+                            << QString("protocols=%1").arg(window.protocolSummary())
                             << QString("received=%1").arg(stats.received)
                             << QString("dropped=%1").arg(stats.dropped)
                             << QString("queue_dropped=%1").arg(stats.queueDropped)

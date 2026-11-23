@@ -35,14 +35,26 @@ add_library(sss_model STATIC
 target_include_directories(sss_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(sss_model PUBLIC Qt6::Core)
 
+# ------------------------------------------------------------- protocol layer
+# Pure parsing: raw bytes in, Dissection out. No sockets, no Npcap dependency,
+# so the unit tests can feed it pcap samples without touching a network.
+add_library(sss_protocol STATIC
+    src/protocol/Dissector.h
+    src/protocol/Dissector.cpp
+    src/protocol/TransportDissector.h
+    src/protocol/TransportDissector.cpp
+    src/protocol/ApplicationDissector.h
+    src/protocol/ApplicationDissector.cpp
+    src/protocol/ProtocolHelpers.h
+)
+target_link_libraries(sss_protocol PUBLIC sss_model Qt6::Core)
+
 # -------------------------------------------------------------- capture layer
 add_library(sss_capture STATIC
     src/capture/DeviceEnumerator.h
     src/capture/DeviceEnumerator.cpp
     src/capture/CaptureThread.h
     src/capture/CaptureThread.cpp
-    src/capture/FrameSummary.h
-    src/capture/FrameSummary.cpp
 )
 target_include_directories(sss_capture PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -50,6 +62,7 @@ target_include_directories(sss_capture PUBLIC
 )
 target_link_libraries(sss_capture PUBLIC
     sss_model
+    sss_protocol
     Qt6::Core
     "${NPCAP_SDK_DIR}/Lib/x64/wpcap.lib"
     ws2_32

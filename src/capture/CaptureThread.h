@@ -7,6 +7,7 @@
 #include <QVector>
 
 #include <atomic>
+#include <deque>
 
 #include "model/PacketRecord.h"
 
@@ -27,8 +28,10 @@ struct CaptureStats
 //
 // Threading contract:
 //   - startCapture()/stopCapture() are called from the GUI thread;
-//   - packets pile up in a mutex protected queue that the GUI drains with
-//     takePending() from a timer, so no per packet signal is ever emitted.
+//   - packets pile up in a mutex protected deque that the GUI drains with
+//     takePending() from a timer, so no per packet signal is ever emitted;
+//   - std::deque keeps both ends O(1): the capture thread pushes at the back
+//     and the UI pops from the front without shifting the backlog.
 class CaptureThread : public QThread
 {
     Q_OBJECT
@@ -57,7 +60,7 @@ protected:
 
 private:
     mutable QMutex m_mutex;
-    QVector<sss::model::PacketRecord> m_pending;
+    std::deque<sss::model::PacketRecord> m_pending;
     QString m_device;
     QString m_filter;
     CaptureStats m_stats;

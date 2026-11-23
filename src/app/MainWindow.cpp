@@ -10,11 +10,13 @@
 #include <QItemSelectionModel>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMap>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QStringList>
 #include <QTableView>
 #include <QTextCursor>
 #include <QTimer>
@@ -507,6 +509,39 @@ int MainWindow::packetCount() const
 int MainWindow::detailTopLevelCount() const
 {
     return m_details->topLevelItemCount();
+}
+
+// "HTTP=4,TCP=20,ICMP=29" - lets the CLI report prove what was recognized
+// without a human looking at the table.
+QString MainWindow::protocolSummary() const
+{
+    QMap<QString, int> counts;
+    for (int row = 0; row < m_model->rowCount(); ++row) {
+        const sss::model::PacketRecord *record = m_model->packetAt(row);
+        if (record != nullptr) {
+            counts[record->protocol] += 1;
+        }
+    }
+
+    QStringList parts;
+    for (auto it = counts.constBegin(); it != counts.constEnd(); ++it) {
+        parts << QString("%1=%2").arg(it.key()).arg(it.value());
+    }
+    return parts.join(QLatin1Char(','));
+}
+
+// Used by the CLI report to bring a representative packet into view.
+bool MainWindow::selectFirstPacketWithProtocol(const QString &protocol)
+{
+    for (int row = 0; row < m_model->rowCount(); ++row) {
+        const sss::model::PacketRecord *record = m_model->packetAt(row);
+        if (record != nullptr && record->protocol == protocol) {
+            m_table->selectRow(row);
+            m_table->scrollTo(m_model->index(row, 0));
+            return true;
+        }
+    }
+    return false;
 }
 
 sss::capture::CaptureStats MainWindow::captureStats() const

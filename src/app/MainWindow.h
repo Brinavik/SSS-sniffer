@@ -39,6 +39,8 @@ public:
 
     int packetCount() const;
     int detailTopLevelCount() const;
+    QString protocolSummary() const;
+    bool selectFirstPacketWithProtocol(const QString &protocol);
     sss::capture::CaptureStats captureStats() const;
 
     bool runSelfTest();

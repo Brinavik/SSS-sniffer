@@ -8,7 +8,7 @@
 namespace sss::model {
 
 // One node of the protocol detail tree, e.g. "Internet Protocol Version 4".
-// The tree is generic on purpose: real dissectors will fill it the same way.
+// The tree is generic on purpose: every dissector fills it the same way.
 struct DetailNode
 {
     QString name;
@@ -22,13 +22,24 @@ struct PacketRecord
 {
     quint64 index = 0;            // 1-based ordinal inside the capture
     QDateTime timestamp;
-    QString source;               // IP (or MAC for non-IP frames)
+
+    // Address shown in the list. IP address for IP frames (ARP: the advertised
+    // IPv4 addresses); MAC address for everything else; "-" when unknown.
+    QString source;
     QString destination;
-    QString protocol;             // "TCP", "UDP", "ICMP", "HTTP", "DNS"
+
+    QString protocol;             // highest recognized layer, e.g. "HTTP" / "TCP" / "IPv4"
     int length = 0;               // frame length in bytes
     QString info;                 // one-line summary, Wireshark style
+
     QByteArray raw;
     QVector<DetailNode> details;
+
+    // Structured fields, filled by the dissector, kept for the display filter.
+    quint8 ipVersion = 0;         // 4 / 6, 0 when the frame carries no IP header
+    quint8 ipProtocol = 0;        // IANA transport protocol number
+    quint16 sourcePort = 0;
+    quint16 destinationPort = 0;
 };
 
 } // namespace sss::model
