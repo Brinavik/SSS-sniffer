@@ -14,6 +14,7 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QScrollBar>
+#include <QSizePolicy>
 #include <QSplitter>
 #include <QStatusBar>
 #include <QStringList>
@@ -24,6 +25,8 @@
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 
+#include <utility>
+
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
 #    define WIN32_LEAN_AND_MEAN
@@ -33,7 +36,9 @@
 #endif
 
 #include "capture/DeviceEnumerator.h"
+#include "filter/FilterExpression.h"
 #include "model/SamplePackets.h"
+#include "ui/PacketFilterProxyModel.h"
 #include "ui/PacketTableModel.h"
 
 namespace sss::app {
@@ -92,9 +97,15 @@ MainWindow::MainWindow(QWidget *parent)
     resize(1280, 820);
 
     m_model = new sss::ui::PacketTableModel(this);
+    m_proxy = new sss::ui::PacketFilterProxyModel(this);
+    m_proxy->setSourceModel(m_model);
     m_capture = new sss::capture::CaptureThread(this);
     m_drainTimer = new QTimer(this);
     m_drainTimer->setInterval(100);
+    m_filterDebounce = new QTimer(this);
+    m_filterDebounce->setSingleShot(true);
+    m_filterDebounce->setInterval(300);
+    connect(m_filterDebounce, &QTimer::timeout, this, &MainWindow::onDisplayFilterCommitted);
 
     createCentralWidget();
     createToolBar();
@@ -122,7 +133,7 @@ MainWindow::MainWindow(QWidget *parent)
 void MainWindow::createCentralWidget()
 {
     m_table = new QTableView(this);
-    m_table->setModel(m_model);
+    m_table->setModel(m_proxy);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -213,6 +224,28 @@ void MainWindow::createToolBar()
     m_filterEdit->setMinimumWidth(320);
     m_filterEdit->setClearButtonEnabled(true);
     toolBar->addWidget(m_filterEdit);
+
+    // Second row: display filter, evaluated over captured packets by the proxy.
+    addToolBarBreak();
+    QToolBar *filterBar = addToolBar(QStringLiteral("Display filter"));
+    filterBar->setMovable(false);
+    filterBar->setFloatable(false);
+
+    filterBar->addWidget(new QLabel(QStringLiteral(" Display filter: "), this));
+    m_displayFilterEdit = new QLineEdit(this);
+    m_displayFilterEdit->setPlaceholderText(
+        QStringLiteral("e.g. http and ip.src == 127.0.0.1 | tcp or udp | not icmp | len > 100"));
+    m_displayFilterEdit->setClearButtonEnabled(true);
+    m_displayFilterEdit->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    filterBar->addWidget(m_displayFilterEdit);
+    connect(m_displayFilterEdit, &QLineEdit::textEdited, this, &MainWindow::onDisplayFilterEdited);
+    connect(m_displayFilterEdit, &QLineEdit::returnPressed, this, &MainWindow::onDisplayFilterCommitted);
+
+    QAction *applyAction = filterBar->addAction(QStringLiteral("Apply"));
+    connect(applyAction, &QAction::triggered, this, &MainWindow::onDisplayFilterCommitted);
+
+    QAction *resetAction = filterBar->addAction(QStringLiteral("Reset"));
+    connect(resetAction, &QAction::triggered, this, &MainWindow::onDisplayFilterCleared);
 }
 
 void MainWindow::createStatusBar()
@@ -391,7 +424,7 @@ void MainWindow::loadDemoPackets()
     m_details->clear();
     m_hex->clear();
 
-    if (m_model->rowCount() > 0) {
+    if (m_proxy->rowCount() > 0) {
         m_table->selectRow(0);
     }
     updateCounters();
@@ -459,7 +492,8 @@ void MainWindow::onCurrentRowChanged(const QModelIndex &current, const QModelInd
         return;
     }
 
-    const sss::model::PacketRecord *record = m_model->packetAt(current.row());
+    const QModelIndex sourceIndex = m_proxy->mapToSource(current);
+    const sss::model::PacketRecord *record = m_model->packetAt(sourceIndex.row());
     if (record == nullptr) {
         return;
     }
@@ -487,6 +521,9 @@ void MainWindow::updateCounters()
     const sss::capture::CaptureStats stats = m_capture->stats();
 
     QString text = QString("%1 packets").arg(m_model->rowCount());
+    if (m_proxy->hasExpression()) {
+        text += QString(" | showing %1").arg(m_proxy->rowCount());
+    }
     if (stats.dropped > 0 || stats.interfaceDropped > 0) {
         text += QString(" | dropped %1").arg(stats.dropped + stats.interfaceDropped);
     }
@@ -504,6 +541,62 @@ void MainWindow::setHeadless(bool headless)
 int MainWindow::packetCount() const
 {
     return m_model->rowCount();
+}
+
+bool MainWindow::applyDisplayFilter(const QString &text)
+{
+    QString error;
+    sss::filter::FilterExpression expression = sss::filter::FilterExpression::parse(text, &error);
+    if (!error.isEmpty()) {
+        m_displayFilterEdit->setStyleSheet(QStringLiteral("QLineEdit { border: 1px solid #C62828; }"));
+        statusBar()->showMessage(QString("Invalid filter: %1").arg(error));
+        return false;
+    }
+
+    m_displayFilterEdit->setStyleSheet(QString());
+    const bool empty = expression.isEmpty();
+    m_proxy->setExpression(std::move(expression));
+    updateCounters();
+
+    if (empty) {
+        statusBar()->showMessage(QStringLiteral("Display filter cleared"));
+    } else {
+        statusBar()->showMessage(QString("Filter \"%1\": %2 of %3 packets")
+                                     .arg(text.trimmed())
+                                     .arg(m_proxy->rowCount())
+                                     .arg(m_model->rowCount()));
+    }
+    return true;
+}
+
+void MainWindow::onDisplayFilterEdited(const QString &text)
+{
+    Q_UNUSED(text);
+    m_filterDebounce->start();
+}
+
+bool MainWindow::setDisplayFilter(const QString &text)
+{
+    m_displayFilterEdit->setText(text);
+    return applyDisplayFilter(text);
+}
+
+int MainWindow::visiblePacketCount() const
+{
+    return m_proxy->rowCount();
+}
+
+void MainWindow::onDisplayFilterCommitted()
+{
+    m_filterDebounce->stop();
+    applyDisplayFilter(m_displayFilterEdit->text());
+}
+
+void MainWindow::onDisplayFilterCleared()
+{
+    m_filterDebounce->stop();
+    m_displayFilterEdit->clear();
+    applyDisplayFilter(QString());
 }
 
 int MainWindow::detailTopLevelCount() const
@@ -536,9 +629,13 @@ bool MainWindow::selectFirstPacketWithProtocol(const QString &protocol)
     for (int row = 0; row < m_model->rowCount(); ++row) {
         const sss::model::PacketRecord *record = m_model->packetAt(row);
         if (record != nullptr && record->protocol == protocol) {
-            m_table->selectRow(row);
-            m_table->scrollTo(m_model->index(row, 0));
-            return true;
+            const QModelIndex proxyIndex = m_proxy->mapFromSource(m_model->index(row, 0));
+            if (proxyIndex.isValid()) {
+                m_table->selectRow(proxyIndex.row());
+                m_table->scrollTo(proxyIndex);
+                return true;
+            }
+            return false;
         }
     }
     return false;

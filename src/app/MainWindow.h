@@ -17,6 +17,7 @@ class QTimer;
 class QTreeWidget;
 
 namespace sss::ui {
+class PacketFilterProxyModel;
 class PacketTableModel;
 }
 
@@ -36,6 +37,12 @@ public:
     void stopCapture();
     void pollCapture();
     void setHeadless(bool headless);
+
+    // Parses and applies a display filter. Returns false and keeps the previous
+    // filter when the expression is invalid (error text goes to the status bar).
+    bool applyDisplayFilter(const QString &text);
+    bool setDisplayFilter(const QString &text);
+    int visiblePacketCount() const;
 
     int packetCount() const;
     int detailTopLevelCount() const;
@@ -59,6 +66,9 @@ private slots:
     void onRefreshDevices();
     void onCaptureFailed(const QString &message);
     void onCaptureStopped();
+    void onDisplayFilterEdited(const QString &text);
+    void onDisplayFilterCommitted();
+    void onDisplayFilterCleared();
 
 private:
     void createCentralWidget();
@@ -71,10 +81,12 @@ private:
     void updateCounters();
 
     sss::ui::PacketTableModel *m_model = nullptr;
+    sss::ui::PacketFilterProxyModel *m_proxy = nullptr;
     QTableView *m_table = nullptr;
     QTreeWidget *m_details = nullptr;
     QPlainTextEdit *m_hex = nullptr;
     QLineEdit *m_filterEdit = nullptr;
+    QLineEdit *m_displayFilterEdit = nullptr;
     QComboBox *m_deviceSelector = nullptr;
     QLabel *m_countLabel = nullptr;
     QLabel *m_privilegeLabel = nullptr;
@@ -82,6 +94,7 @@ private:
     QAction *m_stopAction = nullptr;
     sss::capture::CaptureThread *m_capture = nullptr;
     QTimer *m_drainTimer = nullptr;
+    QTimer *m_filterDebounce = nullptr;
     bool m_headless = false;
 };
 

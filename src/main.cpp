@@ -105,6 +105,11 @@ int main(int argc, char *argv[])
                                    ? arguments.at(index + 2)
                                    : QStringLiteral("ip");
         const bool ipv6 = filter.contains(QLatin1Char('6'));
+        // Optional third argument: a display filter applied before the capture
+        // screenshot, so the filtered view can be verified automatically.
+        const QString displayFilter = (index + 3 < arguments.size())
+                                          ? arguments.at(index + 3)
+                                          : QString();
 
         QString enumerationError;
         const QString device = pickLoopbackDevice(&enumerationError);
@@ -125,9 +130,12 @@ int main(int argc, char *argv[])
             QProcess::startDetached(QStringLiteral("ping.exe"), pingArguments);
         });
 
-        QTimer::singleShot(7000, &app, [&app, &window, reportPath, device, filter, started, startError, enumerationError]() {
+        QTimer::singleShot(7000, &app, [&app, &window, reportPath, device, filter, displayFilter, started, startError, enumerationError]() {
             window.stopCapture();
             window.pollCapture();
+
+            const bool filterApplied =
+                displayFilter.isEmpty() ? true : window.setDisplayFilter(displayFilter);
 
             const QString pngPath = reportPath + QStringLiteral(".png");
             if (!window.selectFirstPacketWithProtocol(QStringLiteral("HTTP"))) {
@@ -149,6 +157,9 @@ int main(int argc, char *argv[])
                             << QString("elevated=%1").arg(sss::capture::CaptureThread::isElevated() ? "yes" : "no")
                             << QString("rows=%1").arg(rows)
                             << QString("protocols=%1").arg(window.protocolSummary())
+                            << QString("display_filter=%1").arg(displayFilter)
+                            << QString("filter_applied=%1").arg(filterApplied ? "yes" : "no")
+                            << QString("visible=%1").arg(window.visiblePacketCount())
                             << QString("received=%1").arg(stats.received)
                             << QString("dropped=%1").arg(stats.dropped)
                             << QString("queue_dropped=%1").arg(stats.queueDropped)

@@ -265,6 +265,8 @@ struct FrameParts
     QString ipDestination;
     quint8 ipProtocol = kProtocolTcp;
     quint8 ttl = 64;
+    quint16 sourcePort = 0;
+    quint16 destinationPort = 0;
     QByteArray segment;
     QString transportTitle;
     QVector<DetailNode> transportFields;
@@ -283,6 +285,10 @@ PacketRecord assemble(quint64 index, const QDateTime &timestamp, const FramePart
     record.destination = parts.ipDestination;
     record.protocol = parts.summaryProtocol;
     record.info = parts.summaryInfo;
+    record.ipVersion = 4;
+    record.ipProtocol = parts.ipProtocol;
+    record.sourcePort = parts.sourcePort;
+    record.destinationPort = parts.destinationPort;
 
     const QByteArray source = ipv4Address(parts.ipSource);
     const QByteArray destination = ipv4Address(parts.ipDestination);
@@ -327,6 +333,8 @@ FrameParts makeHttpGet(quint32 sequence)
     parts.ipDestination = QStringLiteral("93.184.216.34");
     parts.summaryProtocol = QStringLiteral("HTTP");
     parts.summaryInfo = QStringLiteral("GET /index.html HTTP/1.1");
+    parts.sourcePort = 52312;
+    parts.destinationPort = 80;
     parts.protocolChain = QStringLiteral("eth:ethertype:ip:tcp:http");
 
     const QByteArray request = "GET /index.html HTTP/1.1\r\n"
@@ -368,6 +376,8 @@ FrameParts makeHttpResponse(quint32 sequence)
     parts.ipDestination = QStringLiteral("192.168.1.100");
     parts.summaryProtocol = QStringLiteral("HTTP");
     parts.summaryInfo = QStringLiteral("HTTP/1.1 200 OK  (text/html)");
+    parts.sourcePort = 80;
+    parts.destinationPort = 52312;
     parts.protocolChain = QStringLiteral("eth:ethertype:ip:tcp:http");
 
     const QByteArray response = "HTTP/1.1 200 OK\r\n"
@@ -411,6 +421,8 @@ FrameParts makeDnsQuery(quint32 sequence)
     parts.ipProtocol = kProtocolUdp;
     parts.summaryProtocol = QStringLiteral("DNS");
     parts.summaryInfo = QStringLiteral("Standard query 0x1a2b A example.com");
+    parts.sourcePort = 52312;
+    parts.destinationPort = 53;
     parts.protocolChain = QStringLiteral("eth:ethertype:ip:udp:dns");
 
     const QByteArray query = buildDnsQuery(0x1a2b, QStringLiteral("example.com"));
@@ -446,6 +458,8 @@ FrameParts makeDnsResponse(quint32 sequence)
     parts.ipProtocol = kProtocolUdp;
     parts.summaryProtocol = QStringLiteral("DNS");
     parts.summaryInfo = QStringLiteral("Standard query response 0x1a2b A example.com A 93.184.216.34");
+    parts.sourcePort = 53;
+    parts.destinationPort = 52312;
     parts.protocolChain = QStringLiteral("eth:ethertype:ip:udp:dns");
 
     const QByteArray response = buildDnsResponse(0x1a2b, QStringLiteral("example.com"),
@@ -481,6 +495,8 @@ FrameParts makeTcpSyn(quint32 sequence)
     parts.ipDestination = QStringLiteral("140.82.114.4");
     parts.summaryProtocol = QStringLiteral("TCP");
     parts.summaryInfo = QStringLiteral("52315 -> 443 [SYN] Seq=0 Win=64240 Len=0 MSS=1460");
+    parts.sourcePort = 52315;
+    parts.destinationPort = 443;
     parts.protocolChain = QStringLiteral("eth:ethertype:ip:tcp");
 
     parts.segment = buildTcp(52315, 443, 0, 0, 0x02, 64240, QByteArray(),
@@ -504,6 +520,8 @@ FrameParts makeTcpAck(quint32 sequence)
     parts.ipDestination = QStringLiteral("192.168.1.100");
     parts.summaryProtocol = QStringLiteral("TCP");
     parts.summaryInfo = QStringLiteral("443 -> 52315 [ACK] Seq=1 Ack=1 Win=64240 Len=0");
+    parts.sourcePort = 443;
+    parts.destinationPort = 52315;
     parts.protocolChain = QStringLiteral("eth:ethertype:ip:tcp");
 
     parts.segment = buildTcp(443, 52315, 1, 1, 0x10, 64240, QByteArray(),

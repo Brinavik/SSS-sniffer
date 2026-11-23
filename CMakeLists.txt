@@ -35,6 +35,13 @@ add_library(sss_model STATIC
 target_include_directories(sss_model PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(sss_model PUBLIC Qt6::Core)
 
+# --------------------------------------------------------------- filter layer
+add_library(sss_filter STATIC
+    src/filter/FilterExpression.h
+    src/filter/FilterExpression.cpp
+)
+target_link_libraries(sss_filter PUBLIC sss_model Qt6::Core)
+
 # ------------------------------------------------------------- protocol layer
 # Pure parsing: raw bytes in, Dissection out. No sockets, no Npcap dependency,
 # so the unit tests can feed it pcap samples without touching a network.
@@ -72,10 +79,12 @@ target_link_libraries(sss_capture PUBLIC
 add_library(sss_ui STATIC
     src/ui/PacketTableModel.h
     src/ui/PacketTableModel.cpp
+    src/ui/PacketFilterProxyModel.h
+    src/ui/PacketFilterProxyModel.cpp
     src/app/MainWindow.h
     src/app/MainWindow.cpp
 )
-target_link_libraries(sss_ui PUBLIC sss_model sss_capture Qt6::Widgets)
+target_link_libraries(sss_ui PUBLIC sss_model sss_capture sss_filter Qt6::Widgets)
 
 # --------------------------------------------------------------- application
 # WIN32 subsystem: no console window follows the GUI. `--selftest` re-attaches
@@ -85,3 +94,9 @@ target_link_libraries(sss_sniffer PRIVATE sss_ui)
 
 # Convenience: Qt runtime DLLs are found through PATH during development.
 # Run windeployqt on sss_sniffer.exe before shipping a standalone build.
+
+# ---------------------------------------------------------------------- tests
+enable_testing()
+add_executable(sss_tests tests/protocol_tests.cpp)
+target_link_libraries(sss_tests PRIVATE sss_protocol sss_filter)
+add_test(NAME protocol_tests COMMAND sss_tests)

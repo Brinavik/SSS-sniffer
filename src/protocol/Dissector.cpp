@@ -17,6 +17,7 @@ using detail::ipv6Text;
 using detail::macText;
 using detail::node;
 using detail::readU16;
+using detail::readU32;
 
 constexpr quint16 kEtherTypeIpv4 = 0x0800;
 constexpr quint16 kEtherTypeIpv6 = 0x86DD;
@@ -436,10 +437,13 @@ void Parser::parseIpv6(int offset)
     int cursor = offset + 40;
     int remaining = qMin<int>(payloadLength, m_captured - cursor);
 
+    bool isFragment = false;
+    int fragmentOffset = 0;
+
     // Walk the extension header chain; only the final protocol reaches L4.
     for (int guard = 0; guard < 8; ++guard) {
         int headerBytes = 0;
-        QString name;
+        sss::model::DetailNode extension;
 
         if (nextHeader == 0 || nextHeader == 43 || nextHeader == 60) {
             if (remaining < 8) {
@@ -447,23 +451,40 @@ void Parser::parseIpv6(int offset)
                 return;
             }
             headerBytes = (m_data[cursor + 1] + 1) * 8;
-            name = (nextHeader == 0) ? QStringLiteral("Hop-by-Hop Options")
+            const QString name = (nextHeader == 0)
+                                     ? QStringLiteral("Hop-by-Hop Options")
                                      : (nextHeader == 43 ? QStringLiteral("Routing Header")
                                                          : QStringLiteral("Destination Options"));
+            extension = node(name);
         } else if (nextHeader == 44) {
             if (remaining < 8) {
                 fail(QStringLiteral("Truncated IPv6 fragment header"));
                 return;
             }
             headerBytes = 8;
-            name = QStringLiteral("Fragment Header");
+            isFragment = true;
+            const quint16 fragmentField = readU16(m_data + cursor + 2);
+            fragmentOffset = fragmentField >> 3;
+            extension = node(QStringLiteral("Fragment Header"));
+            extension.children.append(node(QStringLiteral("Fragment Offset"),
+                                           QString("%1 bytes").arg(fragmentOffset * 8)));
+            extension.children.append(node(QStringLiteral("More Fragments"),
+                                           (fragmentField & 0x0001) != 0
+                                               ? QStringLiteral("Yes")
+                                               : QStringLiteral("No")));
+            extension.children.append(
+                node(QStringLiteral("Identification"),
+                     QString("0x%1").arg(static_cast<qulonglong>(readU32(m_data + cursor + 4)),
+                                         8,
+                                         16,
+                                         QLatin1Char('0'))));
         } else if (nextHeader == 51) {
             if (remaining < 8) {
                 fail(QStringLiteral("Truncated IPv6 authentication header"));
                 return;
             }
             headerBytes = (m_data[cursor + 1] + 2) * 4;
-            name = QStringLiteral("Authentication Header");
+            extension = node(QStringLiteral("Authentication Header"));
         } else {
             break;
         }
@@ -473,11 +494,22 @@ void Parser::parseIpv6(int offset)
             return;
         }
 
-        const quint8 following = m_data[cursor];
-        m_out.details.append(node(name, QString("%1 bytes").arg(headerBytes)));
-        nextHeader = following;
+        extension.children.prepend(node(QStringLiteral("Next Header"), ipProtocolText(m_data[cursor])));
+        extension.value = QString("%1 bytes").arg(headerBytes);
+        m_out.details.append(extension);
+
+        nextHeader = m_data[cursor];
         cursor += headerBytes;
         remaining -= headerBytes;
+    }
+
+    // A non-first fragment carries no transport header: everything after the
+    // fragment header is payload. Parsing it as TCP/UDP would invent ports and
+    // sequence numbers, so report the fragment and stop, mirroring IPv4.
+    if (isFragment && fragmentOffset != 0) {
+        m_out.info = QString("IPv6 fragment, offset %1").arg(fragmentOffset * 8);
+        m_out.ipProtocol = nextHeader;
+        return;
     }
 
     m_out.ipProtocol = nextHeader;
