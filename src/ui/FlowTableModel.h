@@ -17,6 +17,8 @@ public:
         ColumnIndex = 0,
         ColumnClient,
         ColumnServer,
+        ColumnProcess,
+        ColumnPid,
         ColumnPackets,
         ColumnBytes,
         ColumnDuration,

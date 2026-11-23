@@ -15,7 +15,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 
 # Npcap SDK: pass -DNPCAP_SDK_DIR=<path> or export the environment variable.
 if(NOT DEFINED NPCAP_SDK_DIR AND DEFINED ENV{NPCAP_SDK_DIR})
@@ -46,8 +46,16 @@ target_link_libraries(sss_filter PUBLIC sss_model Qt6::Core)
 add_library(sss_flow STATIC
     src/flow/TcpFlowTracker.h
     src/flow/TcpFlowTracker.cpp
+    src/flow/TcpTableParser.h
+    src/flow/TcpTableParser.cpp
+    src/flow/ProcessResolver.h
+    src/flow/ProcessResolver.cpp
 )
-target_link_libraries(sss_flow PUBLIC sss_model Qt6::Core)
+target_link_libraries(sss_flow PUBLIC sss_model sss_protocol Qt6::Core)
+if(WIN32)
+    # GetExtendedTcpTable lives in iphlpapi.
+    target_link_libraries(sss_flow PUBLIC iphlpapi)
+endif()
 
 # ------------------------------------------------------------- protocol layer
 # Pure parsing: raw bytes in, Dissection out. No sockets, no Npcap dependency,
@@ -99,7 +107,7 @@ target_link_libraries(sss_ui PUBLIC sss_model sss_capture sss_filter sss_flow Qt
 # WIN32 subsystem: no console window follows the GUI. `--selftest` re-attaches
 # to the parent console when one exists, so exit codes stay scriptable.
 add_executable(sss_sniffer WIN32 src/main.cpp)
-target_link_libraries(sss_sniffer PRIVATE sss_ui)
+target_link_libraries(sss_sniffer PRIVATE sss_ui Qt6::Network)
 
 # Convenience: Qt runtime DLLs are found through PATH during development.
 # Run windeployqt on sss_sniffer.exe before shipping a standalone build.

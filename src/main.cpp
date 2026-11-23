@@ -11,6 +11,7 @@
 #include <QFile>
 #include <QProcess>
 #include <QPixmap>
+#include <QTcpSocket>
 #include <QTextStream>
 #include <QTimer>
 
@@ -24,6 +25,7 @@
 #include "app/MainWindow.h"
 #include "capture/CaptureThread.h"
 #include "capture/DeviceEnumerator.h"
+#include "flow/ProcessResolver.h"
 
 namespace {
 
@@ -68,6 +70,61 @@ QString pickLoopbackDevice(QString *error)
 
 } // namespace
 
+namespace {
+
+// Opens a loopback TCP connection, then asks the process resolver who owns it.
+// This exercises GetExtendedTcpTable (byte order, both address families, PID
+// lookup) without depending on Npcap or on a live capture.
+int runProcessTest(const QStringList &arguments)
+{
+    const int index = arguments.indexOf(QStringLiteral("--process-test"));
+    const QString reportPath = (index + 1 < arguments.size())
+                                   ? arguments.at(index + 1)
+                                   : QStringLiteral("process-test.txt");
+
+    QTcpSocket socket;
+    socket.connectToHost(QStringLiteral("127.0.0.1"), 3080);
+    const bool connected = socket.waitForConnected(3000);
+
+    sss::flow::ProcessResolver resolver;
+    resolver.refresh();
+
+    quint32 pid = 0;
+    bool resolved = false;
+    QString processName;
+    QString endpoint;
+
+    if (connected) {
+        endpoint = QString("%1:%2 -> %3:%4")
+                       .arg(socket.localAddress().toString())
+                       .arg(socket.localPort())
+                       .arg(socket.peerAddress().toString())
+                       .arg(socket.peerPort());
+
+        const sss::flow::TcpFlowKey key = sss::flow::TcpFlowKey::fromEndpoints(
+            socket.localAddress().toString(), socket.localPort(),
+            socket.peerAddress().toString(), socket.peerPort());
+
+        resolved = resolver.resolve(key, &pid);
+        if (resolved) {
+            processName = resolver.processName(pid);
+        }
+    }
+
+    writeReport(reportPath,
+                QStringList()
+                    << QString("connected=%1").arg(connected ? "yes" : "no")
+                    << QString("endpoint=%1").arg(endpoint)
+                    << QString("resolved=%1").arg(resolved ? "yes" : "no")
+                    << QString("pid=%1").arg(pid)
+                    << QString("process=%1").arg(processName)
+                    << QString("result=%1").arg(resolved ? "PASS" : "FAIL"));
+
+    return resolved ? 0 : 1;
+}
+
+} // namespace
+
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
@@ -75,10 +132,15 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationVersion(QStringLiteral("0.2.0"));
     QCoreApplication::setOrganizationName(QStringLiteral("UCAS SSS Lab"));
 
+    const QStringList arguments = QApplication::arguments();
+
+    // Runs without the main window: no device enumeration, no Npcap.
+    if (arguments.contains(QStringLiteral("--process-test"))) {
+        return runProcessTest(arguments);
+    }
+
     sss::app::MainWindow window;
     window.show();
-
-    const QStringList arguments = QApplication::arguments();
 
     if (arguments.contains(QStringLiteral("--selftest"))) {
         attachParentConsole();
@@ -146,6 +208,7 @@ int main(int argc, char *argv[])
             const int capturedRows = window.packetCount();
             const int capturedVisible = window.visiblePacketCount();
             const QString protocols = window.protocolSummary();
+            const QString followedProcess = window.followedFlowProcess();
 
             const QString pngPath = reportPath + QStringLiteral(".png");
             if (!window.selectFirstPacketWithProtocol(QStringLiteral("HTTP"))) {
@@ -174,6 +237,7 @@ int main(int argc, char *argv[])
                             << QString("protocols=%1").arg(protocols)
                             << QString("tcp_flows=%1").arg(flows)
                             << QString("followed_largest_flow=%1").arg(followed ? "yes" : "no")
+                            << QString("followed_process=%1").arg(followedProcess)
                             << QString("display_filter=%1").arg(displayFilter)
                             << QString("filter_applied=%1").arg(filterApplied ? "yes" : "no")
                             << QString("visible=%1").arg(capturedVisible)

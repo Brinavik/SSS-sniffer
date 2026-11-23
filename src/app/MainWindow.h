@@ -4,6 +4,8 @@
 #include <QModelIndex>
 
 #include "capture/CaptureThread.h"
+#include "capture/DeviceEnumerator.h"
+#include "flow/ProcessResolver.h"
 #include "flow/TcpFlowTracker.h"
 #include "model/PacketRecord.h"
 
@@ -15,6 +17,7 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QTableView;
+class QThread;
 class QTimer;
 class QTreeWidget;
 
@@ -58,6 +61,7 @@ public:
     bool selectFirstPacketWithProtocol(const QString &protocol);
     bool followFlow(int flowIndex);
     bool followLargestFlow();
+    QString followedFlowProcess() const;
     void clearFlowFilter();
     sss::capture::CaptureStats captureStats() const;
 
@@ -90,7 +94,10 @@ private:
     void createFlowDock();
     void refreshFlows();
     void resetDataset();
+    void resolveProcessForPacket(const sss::model::PacketRecord &packet);
     void loadDevices();
+    void loadDevicesAsync();
+    void applyDevices(const QVector<sss::capture::DeviceInfo> &devices, const QString &error);
     void showPacketDetail(const sss::model::PacketRecord &record);
     void showPacketHex(const sss::model::PacketRecord &record);
     void updateCounters();
@@ -110,12 +117,17 @@ private:
     sss::capture::CaptureThread *m_capture = nullptr;
     QTimer *m_drainTimer = nullptr;
     QTimer *m_filterDebounce = nullptr;
+    QThread *m_deviceThread = nullptr;
+    bool m_deviceLoading = false;
 
     sss::flow::TcpFlowTracker *m_flows = nullptr;
+    sss::flow::ProcessResolver m_processResolver;
+    qint64 m_lastProcessRefreshMs = 0;
     sss::ui::FlowTableModel *m_flowModel = nullptr;
     QTableView *m_flowTable = nullptr;
     QDockWidget *m_flowDock = nullptr;
     int m_flowRefreshTick = 0;
+    int m_followedFlowIndex = -1;
 
     bool m_headless = false;
 };

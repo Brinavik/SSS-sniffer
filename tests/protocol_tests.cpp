@@ -13,6 +13,7 @@
 
 #include "filter/FilterExpression.h"
 #include "flow/TcpFlowTracker.h"
+#include "flow/TcpTableParser.h"
 #include "model/PacketRecord.h"
 #include "protocol/Dissector.h"
 
@@ -390,6 +391,128 @@ void testFlowEdgeCases()
     check(truncated.count() == 0, QStringLiteral("flow: empty address ignored"));
 }
 
+void testTcpTableParsing()
+{
+    // Mirrors MIB_TCPROW_OWNER_PID.
+    struct RawV4
+    {
+        quint32 state;
+        quint32 localAddress;
+        quint32 localPort;
+        quint32 remoteAddress;
+        quint32 remotePort;
+        quint32 pid;
+    };
+
+    // The address DWORD holds the octets in network order; on a little endian
+    // machine that is least significant byte first.
+    auto ipv4Dword = [](quint8 a, quint8 b, quint8 c, quint8 d) {
+        return static_cast<quint32>(a) | (static_cast<quint32>(b) << 8)
+               | (static_cast<quint32>(c) << 16) | (static_cast<quint32>(d) << 24);
+    };
+
+    // The API stores the port in network byte order inside the low 16 bits, so
+    // the value read back on x86 is byte swapped. This helper writes what the
+    // API writes, which is exactly what the parser has to undo.
+    auto wirePort = [](quint16 port) {
+        const quint16 swapped = static_cast<quint16>((port >> 8) | (port << 8));
+        return static_cast<quint32>(swapped);
+    };
+
+    QByteArray table;
+    const quint32 count = 2;
+    table.append(reinterpret_cast<const char *>(&count), sizeof(count));
+
+    RawV4 established {};
+    established.state = 5;
+    established.localAddress = ipv4Dword(127, 0, 0, 1);
+    established.localPort = wirePort(3080);
+    established.remoteAddress = ipv4Dword(127, 0, 0, 1);
+    established.remotePort = wirePort(63051);
+    established.pid = 1234;
+    table.append(reinterpret_cast<const char *>(&established), sizeof(established));
+
+    RawV4 listener {};
+    listener.state = 2;
+    listener.localAddress = ipv4Dword(0, 0, 0, 0);
+    listener.localPort = wirePort(52800);
+    listener.pid = 4321;
+    table.append(reinterpret_cast<const char *>(&listener), sizeof(listener));
+
+    const QVector<sss::flow::TcpTableRow> rows =
+        sss::flow::parseTcpTableV4(table.constData(), static_cast<quint32>(table.size()));
+
+    check(rows.size() == 2, QStringLiteral("table v4: row count"));
+    check(rows.at(0).localPort == 3080, QStringLiteral("table v4: local port byte order"));
+    check(rows.at(0).remotePort == 63051, QStringLiteral("table v4: remote port byte order"));
+    check(rows.at(0).localAddress == QStringLiteral("127.0.0.1"),
+          QStringLiteral("table v4: local address"));
+    check(rows.at(0).pid == 1234, QStringLiteral("table v4: pid"));
+    check(rows.at(1).listening, QStringLiteral("table v4: listener flag"));
+    check(rows.at(1).remoteAddress.isEmpty(),
+          QStringLiteral("table v4: listener has no remote address"));
+
+    const auto exact = sss::flow::TcpFlowKey::fromEndpoints(
+        QStringLiteral("127.0.0.1"), 3080, QStringLiteral("127.0.0.1"), 63051);
+    check(sss::flow::resolvePid(rows, exact) == 1234, QStringLiteral("table v4: exact match"));
+
+    const auto mirrored = sss::flow::TcpFlowKey::fromEndpoints(
+        QStringLiteral("127.0.0.1"), 63051, QStringLiteral("127.0.0.1"), 3080);
+    check(sss::flow::resolvePid(rows, mirrored) == 1234, QStringLiteral("table v4: mirrored match"));
+
+    // A connection that was not seen in the table (short lived, or the client
+    // side) still resolves through the listening socket.
+    const auto viaListener = sss::flow::TcpFlowKey::fromEndpoints(
+        QStringLiteral("127.0.0.1"), 52800, QStringLiteral("10.0.0.5"), 40000);
+    check(sss::flow::resolvePid(rows, viaListener) == 4321,
+          QStringLiteral("table v4: listener fallback"));
+
+    const auto unknown = sss::flow::TcpFlowKey::fromEndpoints(
+        QStringLiteral("10.0.0.1"), 1111, QStringLiteral("10.0.0.2"), 2222);
+    check(sss::flow::resolvePid(rows, unknown) == 0, QStringLiteral("table v4: unknown pair"));
+
+    const QVector<sss::flow::TcpTableRow> truncated =
+        sss::flow::parseTcpTableV4(table.constData(), 6);
+    check(truncated.isEmpty(), QStringLiteral("table v4: truncated buffer rejected"));
+
+    // Mirrors MIB_TCP6ROW_OWNER_PID.
+    struct RawV6
+    {
+        quint8 localAddress[16];
+        quint32 localScopeId;
+        quint32 localPort;
+        quint8 remoteAddress[16];
+        quint32 remoteScopeId;
+        quint32 remotePort;
+        quint32 state;
+        quint32 pid;
+    };
+
+    QByteArray table6;
+    const quint32 count6 = 1;
+    table6.append(reinterpret_cast<const char *>(&count6), sizeof(count6));
+
+    RawV6 row6 {};
+    row6.localAddress[15] = 1; // ::1
+    row6.localPort = wirePort(8080);
+    row6.remoteAddress[15] = 1;
+    row6.remotePort = wirePort(50000);
+    row6.state = 5;
+    row6.pid = 777;
+    table6.append(reinterpret_cast<const char *>(&row6), sizeof(row6));
+
+    const QVector<sss::flow::TcpTableRow> rows6 =
+        sss::flow::parseTcpTableV6(table6.constData(), static_cast<quint32>(table6.size()));
+    check(rows6.size() == 1, QStringLiteral("table v6: row count"));
+    check(rows6.at(0).localAddress == QStringLiteral("::1"),
+          QStringLiteral("table v6: compressed address"));
+    check(rows6.at(0).localPort == 8080, QStringLiteral("table v6: port byte order"));
+
+    const auto key6 = sss::flow::TcpFlowKey::fromEndpoints(
+        QStringLiteral("::1"), 8080, QStringLiteral("::1"), 50000);
+    check(sss::flow::resolvePid(rows6, key6) == 777, QStringLiteral("table v6: exact match"));
+}
+
 void testFlowTracking()
 {
     sss::flow::TcpFlowTracker tracker;
@@ -516,6 +639,7 @@ int main()
     testMalformedIpv4();
     testFlowTracking();
     testFlowEdgeCases();
+    testTcpTableParsing();
     testFilters();
 
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);

@@ -103,6 +103,10 @@ QVariant FlowTableModel::data(const QModelIndex &index, int role) const
             return flow.initiatorText();
         case ColumnServer:
             return flow.responderText();
+        case ColumnProcess:
+            return flow.processName.isEmpty() ? QStringLiteral("-") : flow.processName;
+        case ColumnPid:
+            return flow.pid == 0 ? QStringLiteral("-") : QString::number(flow.pid);
         case ColumnPackets:
             return QVariant::fromValue(flow.packetCount());
         case ColumnBytes:
@@ -117,6 +121,7 @@ QVariant FlowTableModel::data(const QModelIndex &index, int role) const
     } else if (role == Qt::TextAlignmentRole) {
         switch (index.column()) {
         case ColumnIndex:
+        case ColumnPid:
         case ColumnPackets:
         case ColumnBytes:
         case ColumnDuration:
@@ -125,12 +130,16 @@ QVariant FlowTableModel::data(const QModelIndex &index, int role) const
             return static_cast<int>(Qt::AlignLeft | Qt::AlignVCenter);
         }
     } else if (role == Qt::ToolTipRole) {
+        const QString process = flow.processName.isEmpty()
+                                    ? QStringLiteral("not attributed to a local process")
+                                    : QString("%1 (PID %2)").arg(flow.processName).arg(flow.pid);
         return QString("Initiator: %1\nResponder: %2\n"
                        "The initiator is the side that sent the first captured packet "
                        "(the SYN sender when the handshake was captured).\n"
-                       "packets: %3\nframe bytes: %4\nstate: %5")
+                       "process: %3\npackets: %4\nframe bytes: %5\nstate: %6")
             .arg(flow.initiatorText(),
                  flow.responderText(),
+                 process,
                  QString::number(flow.packetCount()),
                  QString::number(flow.byteCount()),
                  flow.stateText());
@@ -152,6 +161,10 @@ QVariant FlowTableModel::headerData(int section, Qt::Orientation orientation, in
         return QStringLiteral("Initiator");
     case ColumnServer:
         return QStringLiteral("Responder");
+    case ColumnProcess:
+        return QStringLiteral("Process");
+    case ColumnPid:
+        return QStringLiteral("PID");
     case ColumnPackets:
         return QStringLiteral("Packets");
     case ColumnBytes:

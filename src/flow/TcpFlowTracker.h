@@ -62,6 +62,11 @@ struct TcpFlow
     bool sawFin = false;
     bool sawRst = false;
 
+    // Filled by the process resolver; 0 means "not attributed to a local
+    // process" (for example traffic that was not sent by this host).
+    quint32 pid = 0;
+    QString processName;
+
     quint64 packetCount() const { return packetsAToB + packetsBToA; }
     quint64 byteCount() const { return bytesAToB + bytesBToA; }
     qint64 durationMs() const { return firstSeen.msecsTo(lastSeen); }
@@ -83,6 +88,10 @@ public:
     int count() const;
     QVector<TcpFlow> flows() const;
     const TcpFlow *flowAt(int index) const;
+
+    // Used to attach the owning process right after a flow is created.
+    TcpFlow *flowByKey(const TcpFlowKey &key);
+    const TcpFlow *flowByKey(const TcpFlowKey &key) const;
 
 private:
     QHash<TcpFlowKey, int> m_indexByKey; // key -> position in m_flows

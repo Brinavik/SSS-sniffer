@@ -14,6 +14,7 @@
 #include <QMap>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QScrollBar>
 #include <QSizePolicy>
 #include <QSplitter>
@@ -21,6 +22,7 @@
 #include <QStringList>
 #include <QTableView>
 #include <QTextCursor>
+#include <QThread>
 #include <QTimer>
 #include <QToolBar>
 #include <QTreeWidget>
@@ -125,7 +127,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_drainTimer, &QTimer::timeout, this, &MainWindow::pollCapture);
 
 
-    loadDevices();
+    loadDevicesAsync();
     updateCounters();
 
     if (sss::capture::CaptureThread::isElevated()) {
@@ -138,6 +140,16 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow()
 {
+    // A QThread must not be destroyed while it is still running: if the device
+    // enumeration is blocked, detach it instead. The QPointer guard in the
+    // worker keeps the queued callback from touching a destroyed window.
+    if (m_deviceThread != nullptr) {
+        if (m_deviceThread->isRunning()) {
+            m_deviceThread->setParent(nullptr);
+        }
+        m_deviceThread = nullptr;
+    }
+
     // The tracker is a plain object, not a QObject child.
     delete m_flows;
 }
@@ -154,6 +166,7 @@ void MainWindow::resetDataset()
     m_flowModel->clear();
     m_proxy->clearFlowFilter();
     m_flowRefreshTick = 0;
+    m_followedFlowIndex = -1;
     updateCounters();
 }
 
@@ -311,9 +324,11 @@ void MainWindow::createFlowDock()
     m_flowTable->verticalHeader()->setDefaultSectionSize(22);
     m_flowTable->horizontalHeader()->setStretchLastSection(true);
     m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnIndex, 40);
-    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnClient, 200);
-    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnServer, 200);
-    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnPackets, 80);
+    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnClient, 180);
+    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnServer, 180);
+    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnProcess, 160);
+    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnPid, 70);
+    m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnPackets, 70);
     m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnBytes, 90);
     m_flowTable->setColumnWidth(sss::ui::FlowTableModel::ColumnDuration, 90);
 
@@ -331,12 +346,92 @@ void MainWindow::refreshFlows()
     m_flowModel->setFlows(m_flows->flows());
 }
 
+// Attaches the owning process to a freshly created flow. The TCP tables are
+// snapshots, and short connections can vanish between two refreshes, so this
+// runs on flow creation (throttled) instead of only on a timer.
+void MainWindow::resolveProcessForPacket(const sss::model::PacketRecord &packet)
+{
+    sss::flow::TcpFlowKey key;
+    if (!sss::flow::TcpFlowKey::fromRecord(packet, &key)) {
+        return;
+    }
+
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (now - m_lastProcessRefreshMs >= 250) {
+        m_processResolver.refresh();
+        m_lastProcessRefreshMs = now;
+    }
+
+    quint32 pid = 0;
+    if (!m_processResolver.resolve(key, &pid)) {
+        return;
+    }
+
+    sss::flow::TcpFlow *flow = m_flows->flowByKey(key);
+    if (flow == nullptr) {
+        return;
+    }
+    flow->pid = pid;
+    flow->processName = m_processResolver.processName(pid);
+}
+
 void MainWindow::loadDevices()
 {
-    m_deviceSelector->clear();
-
     QString error;
     const QVector<sss::capture::DeviceInfo> devices = sss::capture::DeviceEnumerator::list(&error);
+    applyDevices(devices, error);
+}
+
+// pcap_findalldevs() can block for seconds (occasionally much longer) while the
+// driver walks the adapters, so it never runs on the GUI thread: the window is
+// usable immediately and the combo is filled when the enumeration returns.
+void MainWindow::loadDevicesAsync()
+{
+    if (m_deviceLoading) {
+        return;
+    }
+
+    m_deviceLoading = true;
+    if (m_startAction != nullptr && !m_capture->isRunning()) {
+        m_startAction->setEnabled(false);
+    }
+    statusBar()->showMessage(QStringLiteral("Enumerating capture devices..."));
+
+    const QPointer<MainWindow> guard(this);
+    QThread *thread = QThread::create([guard]() {
+        QString error;
+        const QVector<sss::capture::DeviceInfo> devices =
+            sss::capture::DeviceEnumerator::list(&error);
+        if (guard.isNull()) {
+            return;
+        }
+        QMetaObject::invokeMethod(
+            guard.data(),
+            [guard, devices, error]() {
+                if (guard.isNull()) {
+                    return;
+                }
+                MainWindow *window = guard.data();
+                window->m_deviceLoading = false;
+                window->applyDevices(devices, error);
+            },
+            Qt::QueuedConnection);
+    });
+
+    m_deviceThread = thread;
+    connect(thread, &QThread::finished, this, [this, thread]() {
+        if (m_deviceThread == thread) {
+            m_deviceThread = nullptr;
+        }
+        thread->deleteLater();
+    });
+    thread->start();
+}
+
+void MainWindow::applyDevices(const QVector<sss::capture::DeviceInfo> &devices,
+                              const QString &error)
+{
+    m_deviceSelector->clear();
 
     for (const sss::capture::DeviceInfo &device : devices) {
         QString label = device.description.isEmpty() ? device.name : device.description;
@@ -353,13 +448,27 @@ void MainWindow::loadDevices()
         statusBar()->showMessage(error.isEmpty()
                                      ? QStringLiteral("No capture devices found")
                                      : QString("Device enumeration failed: %1").arg(error));
+    } else {
+        statusBar()->showMessage(QString("Devices: %1 found").arg(devices.size()));
+    }
+
+    if (m_startAction != nullptr && !m_capture->isRunning()) {
+        m_startAction->setEnabled(true);
+    }
+
+    // Enumeration may finish after a capture was started programmatically;
+    // show the device that is actually being captured.
+    if (m_capture->isRunning() && !m_capture->deviceName().isEmpty()) {
+        const int index = m_deviceSelector->findData(m_capture->deviceName());
+        if (index >= 0) {
+            m_deviceSelector->setCurrentIndex(index);
+        }
     }
 }
 
 void MainWindow::onRefreshDevices()
 {
-    loadDevices();
-    statusBar()->showMessage(QString("Devices refreshed: %1 found").arg(m_deviceSelector->count()));
+    loadDevicesAsync();
 }
 
 bool MainWindow::startCapture(const QString &deviceName, const QString &bpfFilter, QString *error)
@@ -424,7 +533,9 @@ void MainWindow::pollCapture()
     const bool followTail = scrollBar->value() >= scrollBar->maximum() - 4;
 
     for (const sss::model::PacketRecord &packet : packets) {
-        m_flows->observe(packet);
+        if (m_flows->observe(packet)) {
+            resolveProcessForPacket(packet);
+        }
     }
     if (++m_flowRefreshTick >= 5) {
         m_flowRefreshTick = 0;
@@ -638,6 +749,7 @@ bool MainWindow::followFlow(int flowIndex)
     }
 
     m_proxy->setFlowFilter(flow->key);
+    m_followedFlowIndex = flowIndex;
     updateCounters();
     if (m_proxy->rowCount() > 0) {
         m_table->selectRow(0);
@@ -656,6 +768,7 @@ void MainWindow::clearFlowFilter()
         return;
     }
     m_proxy->clearFlowFilter();
+    m_followedFlowIndex = -1;
     updateCounters();
     statusBar()->showMessage(QStringLiteral("Stopped following the TCP flow"));
 }
@@ -674,6 +787,19 @@ bool MainWindow::followLargestFlow()
         }
     }
     return best >= 0 && followFlow(best);
+}
+
+// "chrome.exe (1234)", or "unattributed" when the conversation does not belong
+// to a local socket (other hosts, or a table snapshot that missed it).
+QString MainWindow::followedFlowProcess() const
+{
+    const sss::flow::TcpFlow *flow = m_flows->flowAt(m_followedFlowIndex);
+    if (flow == nullptr || flow->pid == 0) {
+        return QStringLiteral("unattributed");
+    }
+    const QString name = flow->processName.isEmpty() ? QStringLiteral("unknown")
+                                                     : flow->processName;
+    return QString("%1 (%2)").arg(name).arg(flow->pid);
 }
 
 void MainWindow::onFlowActivated(const QModelIndex &index)

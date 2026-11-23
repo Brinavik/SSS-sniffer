@@ -225,4 +225,22 @@ const TcpFlow *TcpFlowTracker::flowAt(int index) const
     return &m_flows.at(index);
 }
 
+TcpFlow *TcpFlowTracker::flowByKey(const TcpFlowKey &key)
+{
+    const auto it = m_indexByKey.constFind(key);
+    if (it == m_indexByKey.constEnd()) {
+        return nullptr;
+    }
+    return &m_flows[it.value()];
+}
+
+const TcpFlow *TcpFlowTracker::flowByKey(const TcpFlowKey &key) const
+{
+    const auto it = m_indexByKey.constFind(key);
+    if (it == m_indexByKey.constEnd()) {
+        return nullptr;
+    }
+    return &m_flows.at(it.value());
+}
+
 } // namespace sss::flow
