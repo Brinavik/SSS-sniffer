@@ -15,7 +15,12 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
+find_package(Qt6 QUIET COMPONENTS Widgets Network)
+if(NOT Qt6_FOUND)
+    message(FATAL_ERROR
+        "Qt6 not found. Set the QT_ROOT environment variable to the Qt kit directory, "
+        "for example C:/Qt/6.8.3/msvc2022_64, or pass -DCMAKE_PREFIX_PATH=<path>.")
+endif()
 
 # Npcap SDK: pass -DNPCAP_SDK_DIR=<path> or export the environment variable.
 if(NOT DEFINED NPCAP_SDK_DIR AND DEFINED ENV{NPCAP_SDK_DIR})

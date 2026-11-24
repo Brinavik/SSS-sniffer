@@ -13,9 +13,25 @@ flow tracking with process attribution.
 
 ## Build
 
+The Qt kit location is machine specific, so `CMakePresets.json` reads it from
+the `QT_ROOT` environment variable instead of hard coding a path. Set it once:
+
+```powershell
+setx QT_ROOT "C:\Qt\6.8.3\msvc2022_64"
+```
+
+Then build (a new terminal picks up the variable):
+
 ```powershell
 cmake --preset vs2022
 cmake --build --preset release
+```
+
+Alternatively skip the preset and pass the path directly:
+
+```powershell
+cmake -S . -B build/vs2022 -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_PREFIX_PATH="C:/Qt/6.8.3/msvc2022_64"
 ```
 
 ## Run
