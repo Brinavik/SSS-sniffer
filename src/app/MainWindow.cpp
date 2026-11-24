@@ -1008,6 +1008,14 @@ bool MainWindow::runSelfTest()
         return false;
     }
 
+    // Device enumeration runs on a worker thread, so give it a moment before
+    // asserting that the selector was filled.
+    QElapsedTimer wait;
+    wait.start();
+    while (m_deviceSelector->count() == 0 && m_deviceLoading && wait.elapsed() < 5000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    }
+
     // Device enumeration must work without elevation.
     return m_deviceSelector->count() > 0;
 }

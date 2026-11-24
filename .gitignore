@@ -1,5 +1,6 @@
 # ---------- CMake / build output ----------
 build/
+dist/
 out/
 cmake-build-*/
 CMakeFiles/
