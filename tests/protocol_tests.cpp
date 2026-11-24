@@ -471,6 +471,27 @@ void testTcpTableParsing()
         QStringLiteral("10.0.0.1"), 1111, QStringLiteral("10.0.0.2"), 2222);
     check(sss::flow::resolvePid(rows, unknown) == 0, QStringLiteral("table v4: unknown pair"));
 
+    // A local service listening on the same port number must not be blamed for
+    // an outbound connection to that port on a different address.
+    QByteArray wrongHostTable;
+    const quint32 wrongHostCount = 1;
+    wrongHostTable.append(reinterpret_cast<const char *>(&wrongHostCount), sizeof(wrongHostCount));
+
+    RawV4 localDns {};
+    localDns.state = 2; // LISTEN
+    localDns.localAddress = ipv4Dword(127, 0, 0, 1);
+    localDns.localPort = wirePort(53);
+    localDns.pid = 999;
+    wrongHostTable.append(reinterpret_cast<const char *>(&localDns), sizeof(localDns));
+
+    const QVector<sss::flow::TcpTableRow> wrongHostRows =
+        sss::flow::parseTcpTableV4(wrongHostTable.constData(),
+                                   static_cast<quint32>(wrongHostTable.size()));
+    const auto dnsFlow = sss::flow::TcpFlowKey::fromEndpoints(
+        QStringLiteral("10.0.0.5"), 40000, QStringLiteral("8.8.8.8"), 53);
+    check(sss::flow::resolvePid(wrongHostRows, dnsFlow) == 0,
+          QStringLiteral("table v4: listener needs a matching address"));
+
     const QVector<sss::flow::TcpTableRow> truncated =
         sss::flow::parseTcpTableV4(table.constData(), 6);
     check(truncated.isEmpty(), QStringLiteral("table v4: truncated buffer rejected"));
@@ -511,6 +532,43 @@ void testTcpTableParsing()
     const auto key6 = sss::flow::TcpFlowKey::fromEndpoints(
         QStringLiteral("::1"), 8080, QStringLiteral("::1"), 50000);
     check(sss::flow::resolvePid(rows6, key6) == 777, QStringLiteral("table v6: exact match"));
+
+    // Dual stack sockets report IPv4 peers as ::ffff:a.b.c.d; the address has
+    // to be unwrapped to match the IPv4 address the dissector produced.
+    QByteArray mappedTable;
+    const quint32 mappedCount = 1;
+    mappedTable.append(reinterpret_cast<const char *>(&mappedCount), sizeof(mappedCount));
+
+    RawV6 mapped {};
+    mapped.localAddress[10] = 0xFF;
+    mapped.localAddress[11] = 0xFF;
+    mapped.localAddress[12] = 1;
+    mapped.localAddress[13] = 2;
+    mapped.localAddress[14] = 3;
+    mapped.localAddress[15] = 4; // ::ffff:1.2.3.4
+    mapped.localPort = wirePort(443);
+    mapped.remoteAddress[10] = 0xFF;
+    mapped.remoteAddress[11] = 0xFF;
+    mapped.remoteAddress[12] = 5;
+    mapped.remoteAddress[13] = 6;
+    mapped.remoteAddress[14] = 7;
+    mapped.remoteAddress[15] = 8; // ::ffff:5.6.7.8
+    mapped.remotePort = wirePort(51000);
+    mapped.state = 5;
+    mapped.pid = 888;
+    mappedTable.append(reinterpret_cast<const char *>(&mapped), sizeof(mapped));
+
+    const QVector<sss::flow::TcpTableRow> mappedRows =
+        sss::flow::parseTcpTableV6(mappedTable.constData(),
+                                   static_cast<quint32>(mappedTable.size()));
+    check(mappedRows.size() == 1, QStringLiteral("table v6 mapped: row count"));
+    check(mappedRows.at(0).localAddress == QStringLiteral("1.2.3.4"),
+          QStringLiteral("table v6 mapped: address unwrapped"));
+
+    const auto mappedKey = sss::flow::TcpFlowKey::fromEndpoints(
+        QStringLiteral("1.2.3.4"), 443, QStringLiteral("5.6.7.8"), 51000);
+    check(sss::flow::resolvePid(mappedRows, mappedKey) == 888,
+          QStringLiteral("table v6 mapped: resolves against IPv4 key"));
 }
 
 void testFlowTracking()

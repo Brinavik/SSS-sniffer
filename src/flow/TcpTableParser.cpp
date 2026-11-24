@@ -33,9 +33,10 @@ struct RawTcp6Row
 };
 
 // The tables store the port in network byte order inside the low 16 bits of a
-// DWORD. Reading that DWORD on a little-endian machine yields the two port
-// bytes swapped, which is why every consumer has to convert. This is the
-// ntohs() equivalent, kept platform independent so it can be unit tested.
+// DWORD. On a little-endian machine (x86/x64, the only targets this project
+// builds for) reading that DWORD yields the two port bytes swapped, so every
+// consumer has to convert. Keeping the swap in one testable helper makes the
+// assumption explicit instead of scattering ntohs() calls.
 quint16 hostPort(quint32 value)
 {
     const quint16 stored = static_cast<quint16>(value & 0xFFFF);
@@ -49,8 +50,21 @@ QString ipv4FromDword(quint32 value)
     return sss::protocol::detail::ipv4Text(bytes);
 }
 
+// Dual stack sockets connecting to an IPv4 destination show up in the IPv6
+// table as ::ffff:a.b.c.d. Rendering that as "::ffff:102:304" would never match
+// the IPv4 address the dissector produced, so unwrap the mapped prefix.
 QString ipv6FromBytes(const quint8 *bytes)
 {
+    bool mapped = true;
+    for (int i = 0; i < 10; ++i) {
+        if (bytes[i] != 0) {
+            mapped = false;
+            break;
+        }
+    }
+    if (mapped && bytes[10] == 0xFF && bytes[11] == 0xFF) {
+        return sss::protocol::detail::ipv4Text(bytes + 12);
+    }
     return sss::protocol::detail::ipv6Text(bytes);
 }
 
@@ -82,9 +96,12 @@ QVector<TcpTableRow> parseTcpTableV4(const void *buffer, quint32 byteCount)
         row.localAddress = ipv4FromDword(raw.localAddress);
         row.localPort = hostPort(raw.localPort);
         row.remotePort = hostPort(raw.remotePort);
+        row.state = raw.state;
         row.pid = raw.pid;
-        row.listening = (row.remotePort == 0);
-        if (!row.listening) {
+        // MIB_TCP_STATE_LISTEN, not "remote port is zero": a bound but not
+        // listening socket also has a zero remote port.
+        row.listening = (raw.state == 2);
+        if (!row.listening && row.remotePort != 0) {
             row.remoteAddress = ipv4FromDword(raw.remoteAddress);
         }
         rows.append(row);
@@ -119,9 +136,10 @@ QVector<TcpTableRow> parseTcpTableV6(const void *buffer, quint32 byteCount)
         row.localAddress = ipv6FromBytes(raw.localAddress);
         row.localPort = hostPort(raw.localPort);
         row.remotePort = hostPort(raw.remotePort);
+        row.state = raw.state;
         row.pid = raw.pid;
-        row.listening = (row.remotePort == 0);
-        if (!row.listening) {
+        row.listening = (raw.state == 2);
+        if (!row.listening && row.remotePort != 0) {
             row.remoteAddress = ipv6FromBytes(raw.remoteAddress);
         }
         rows.append(row);
@@ -147,9 +165,19 @@ quint32 resolvePid(const QVector<TcpTableRow> &rows, const TcpFlowKey &key)
     }
 
     // 2. Fallback: a listening socket on one of the ports belongs to the
-    //    service that accepted the connection.
+    //    service that accepted the connection. The address has to match (or be
+    //    a wildcard), otherwise a local service that happens to listen on the
+    //    same port number - a DNS resolver on 53, say - would be blamed for
+    //    every outbound connection to that port.
     for (const TcpTableRow &row : rows) {
         if (!row.listening) {
+            continue;
+        }
+        const bool wildcard = row.localAddress == QStringLiteral("0.0.0.0")
+                              || row.localAddress == QStringLiteral("::");
+        const bool addressMatches = row.localAddress == key.addressA
+                                    || row.localAddress == key.addressB;
+        if (!wildcard && !addressMatches) {
             continue;
         }
         if (row.localPort == key.portA || row.localPort == key.portB) {

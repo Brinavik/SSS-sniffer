@@ -105,6 +105,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_proxy->setSourceModel(m_model);
     m_flows = new sss::flow::TcpFlowTracker();
     m_flowModel = new sss::ui::FlowTableModel(this);
+    m_processClock.start();
     m_capture = new sss::capture::CaptureThread(this);
     m_drainTimer = new QTimer(this);
     m_drainTimer->setInterval(100);
@@ -165,6 +166,11 @@ void MainWindow::resetDataset()
     m_flows->reset();
     m_flowModel->clear();
     m_proxy->clearFlowFilter();
+    // Drop the process snapshot and the name cache too: a new capture must not
+    // be matched against sockets or PIDs from the previous one.
+    m_processResolver.reset();
+    m_unresolvedProcesses.clear();
+    m_processClock.restart();
     m_flowRefreshTick = 0;
     m_followedFlowIndex = -1;
     updateCounters();
@@ -343,12 +349,13 @@ void MainWindow::createFlowDock()
 
 void MainWindow::refreshFlows()
 {
+    retryPendingProcesses();
     m_flowModel->setFlows(m_flows->flows());
 }
 
-// Attaches the owning process to a freshly created flow. The TCP tables are
-// snapshots, and short connections can vanish between two refreshes, so this
-// runs on flow creation (throttled) instead of only on a timer.
+// Matches a freshly created flow against the current table snapshot. The
+// caller refreshes once per packet batch, after every socket of the batch
+// exists, so this never runs against a snapshot older than those sockets.
 void MainWindow::resolveProcessForPacket(const sss::model::PacketRecord &packet)
 {
     sss::flow::TcpFlowKey key;
@@ -356,23 +363,62 @@ void MainWindow::resolveProcessForPacket(const sss::model::PacketRecord &packet)
         return;
     }
 
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (now - m_lastProcessRefreshMs >= 250) {
-        m_processResolver.refresh();
-        m_lastProcessRefreshMs = now;
-    }
-
     quint32 pid = 0;
     if (!m_processResolver.resolve(key, &pid)) {
+        // Keep it for a couple of retries instead of giving up forever.
+        if (m_unresolvedProcesses.size() < 500) {
+            m_unresolvedProcesses.insert(key, 1);
+        }
         return;
     }
 
+    applyProcess(key, pid);
+}
+
+void MainWindow::applyProcess(const sss::flow::TcpFlowKey &key, quint32 pid)
+{
     sss::flow::TcpFlow *flow = m_flows->flowByKey(key);
     if (flow == nullptr) {
         return;
     }
     flow->pid = pid;
     flow->processName = m_processResolver.processName(pid);
+    m_unresolvedProcesses.remove(key);
+}
+
+// Gives unresolved flows another chance (short connections, or a table that
+// changed between two calls). Throttled to once a second, at most 3 attempts.
+void MainWindow::retryPendingProcesses()
+{
+    if (m_unresolvedProcesses.isEmpty()) {
+        return;
+    }
+    if (m_processClock.isValid() && m_processClock.elapsed() < 1000) {
+        return;
+    }
+    m_processClock.restart();
+
+    m_processResolver.refresh();
+
+    QVector<QPair<sss::flow::TcpFlowKey, quint32>> found;
+    QVector<sss::flow::TcpFlowKey> exhausted;
+    for (auto it = m_unresolvedProcesses.begin(); it != m_unresolvedProcesses.end(); ++it) {
+        quint32 pid = 0;
+        if (m_processResolver.resolve(it.key(), &pid)) {
+            found.append(qMakePair(it.key(), pid));
+        } else if (it.value() + 1 >= 3) {
+            exhausted.append(it.key());
+        } else {
+            it.value() += 1;
+        }
+    }
+
+    for (const auto &entry : found) {
+        applyProcess(entry.first, entry.second);
+    }
+    for (const auto &key : exhausted) {
+        m_unresolvedProcesses.remove(key);
+    }
 }
 
 void MainWindow::loadDevices()
@@ -532,11 +578,22 @@ void MainWindow::pollCapture()
     QScrollBar *scrollBar = m_table->verticalScrollBar();
     const bool followTail = scrollBar->value() >= scrollBar->maximum() - 4;
 
+    // Attribute per batch: refresh once, after every socket of this batch
+    // exists, then match. A per-flow refresh (throttled) left flows created
+    // inside the throttle window permanently unresolved.
+    QVector<sss::model::PacketRecord> newFlows;
     for (const sss::model::PacketRecord &packet : packets) {
         if (m_flows->observe(packet)) {
+            newFlows.append(packet);
+        }
+    }
+    if (!newFlows.isEmpty()) {
+        m_processResolver.refresh();
+        for (const sss::model::PacketRecord &packet : newFlows) {
             resolveProcessForPacket(packet);
         }
     }
+
     if (++m_flowRefreshTick >= 5) {
         m_flowRefreshTick = 0;
         refreshFlows();
@@ -737,6 +794,18 @@ int MainWindow::packetCount() const
 int MainWindow::flowCount() const
 {
     return m_flows->count();
+}
+
+int MainWindow::attributedFlowCount() const
+{
+    int count = 0;
+    for (int index = 0; index < m_flows->count(); ++index) {
+        const sss::flow::TcpFlow *flow = m_flows->flowAt(index);
+        if (flow != nullptr && flow->pid != 0) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 // Restricts the packet table to one connection. The proxy keeps the packet

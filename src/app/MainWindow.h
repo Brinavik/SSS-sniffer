@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QElapsedTimer>
+#include <QHash>
 #include <QMainWindow>
 #include <QModelIndex>
 
@@ -57,6 +59,7 @@ public:
     int packetCount() const;
     int detailTopLevelCount() const;
     int flowCount() const;
+    int attributedFlowCount() const;
     QString protocolSummary() const;
     bool selectFirstPacketWithProtocol(const QString &protocol);
     bool followFlow(int flowIndex);
@@ -95,6 +98,8 @@ private:
     void refreshFlows();
     void resetDataset();
     void resolveProcessForPacket(const sss::model::PacketRecord &packet);
+    void applyProcess(const sss::flow::TcpFlowKey &key, quint32 pid);
+    void retryPendingProcesses();
     void loadDevices();
     void loadDevicesAsync();
     void applyDevices(const QVector<sss::capture::DeviceInfo> &devices, const QString &error);
@@ -122,7 +127,8 @@ private:
 
     sss::flow::TcpFlowTracker *m_flows = nullptr;
     sss::flow::ProcessResolver m_processResolver;
-    qint64 m_lastProcessRefreshMs = 0;
+    QHash<sss::flow::TcpFlowKey, int> m_unresolvedProcesses;
+    QElapsedTimer m_processClock;
     sss::ui::FlowTableModel *m_flowModel = nullptr;
     QTableView *m_flowTable = nullptr;
     QDockWidget *m_flowDock = nullptr;

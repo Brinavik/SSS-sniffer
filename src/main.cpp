@@ -203,6 +203,7 @@ int main(int argc, char *argv[])
             // flow restriction working, not just the filter.
             const bool followed = window.followLargestFlow();
             const int flows = window.flowCount();
+            const int attributedFlows = window.attributedFlowCount();
 
             // Snapshot the capture numbers before demo data replaces them.
             const int capturedRows = window.packetCount();
@@ -236,6 +237,7 @@ int main(int argc, char *argv[])
                             << QString("rows=%1").arg(capturedRows)
                             << QString("protocols=%1").arg(protocols)
                             << QString("tcp_flows=%1").arg(flows)
+                            << QString("attributed_flows=%1").arg(attributedFlows)
                             << QString("followed_largest_flow=%1").arg(followed ? "yes" : "no")
                             << QString("followed_process=%1").arg(followedProcess)
                             << QString("display_filter=%1").arg(displayFilter)

@@ -21,6 +21,9 @@ public:
     // second; the caller throttles it.
     void refresh();
 
+    // Drops the snapshot and the image name cache (new capture, PID reuse).
+    void reset();
+
     bool resolve(const TcpFlowKey &key, quint32 *pid) const;
 
     // Cached image name (e.g. "chrome.exe"); empty when the process cannot be

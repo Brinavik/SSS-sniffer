@@ -14,6 +14,7 @@ struct TcpTableRow
     quint16 localPort = 0;      // host byte order
     QString remoteAddress;      // empty for a listening socket
     quint16 remotePort = 0;     // 0 for a listening socket
+    quint32 state = 0;          // MIB_TCP_STATE_*; 2 is LISTEN
     quint32 pid = 0;
     bool listening = false;
 };
